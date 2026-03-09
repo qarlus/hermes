@@ -1,0 +1,8 @@
+node_modules
+dist
+target
+coverage
+.DS_Store
+*.log
+apps/desktop/src-tauri/gen
+apps/desktop/src-tauri/target
