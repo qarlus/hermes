@@ -116,22 +116,34 @@ export function GitPage({
     repositories.find((repository) => repository.id === selectedRepositoryId) ?? repositories[0] ?? null;
   const remoteRepositories =
     gitHubRepositoryPane === "owned" ? gitHubOwnedRepositories : gitHubPublicRepositories;
-  const [detailMode, setDetailMode] = useState<"remote" | "local">(
-    selectedRepository ? "local" : "remote"
+  const remoteLoading = gitHubRepositoryPane === "owned" ? gitHubRepositoryLoading : gitHubSearchLoading;
+
+  const [screen, setScreen] = useState<"auth" | "browser" | "detail">(
+    gitHubSession ? "browser" : "auth"
   );
+  const [allowLocalBypass, setAllowLocalBypass] = useState(false);
+  const [detailKind, setDetailKind] = useState<"local" | "remote">("local");
   const [selectedRemoteId, setSelectedRemoteId] = useState<string | null>(null);
+
   const selectedRemoteRepository =
     remoteRepositories.find((repository) => repository.id === selectedRemoteId) ?? null;
-  const showOnboarding = !gitHubSession && repositories.length === 0;
 
   useGitHubAuthWebview(gitHubDeviceFlow?.verificationUri ?? null);
 
   useEffect(() => {
+    if (gitHubSession) {
+      setScreen((current) => (current === "auth" ? "browser" : current));
+      return;
+    }
+
+    if (!allowLocalBypass) {
+      setScreen("auth");
+    }
+  }, [allowLocalBypass, gitHubSession]);
+
+  useEffect(() => {
     if (remoteRepositories.length === 0) {
       setSelectedRemoteId(null);
-      if (!selectedRepository) {
-        setDetailMode("local");
-      }
       return;
     }
 
@@ -140,142 +152,142 @@ export function GitPage({
     }
 
     setSelectedRemoteId(remoteRepositories[0]?.id ?? null);
-    if (!selectedRepository) {
-      setDetailMode("remote");
-    }
-  }, [remoteRepositories, selectedRemoteId, selectedRepository]);
+  }, [remoteRepositories, selectedRemoteId]);
 
   useEffect(() => {
-    if (detailMode === "local" && selectedRepository) {
+    if (screen !== "detail") {
       return;
     }
 
-    if (detailMode === "remote" && selectedRemoteRepository) {
+    if (detailKind === "local" && selectedRepository) {
       return;
     }
 
-    if (selectedRepository) {
-      setDetailMode("local");
+    if (detailKind === "remote" && selectedRemoteRepository) {
       return;
     }
 
-    if (selectedRemoteRepository) {
-      setDetailMode("remote");
-    }
-  }, [detailMode, selectedRemoteRepository, selectedRepository]);
+    setScreen(gitHubSession || allowLocalBypass ? "browser" : "auth");
+  }, [allowLocalBypass, detailKind, gitHubSession, screen, selectedRemoteRepository, selectedRepository]);
 
-  const handleSelectLocalRepository = (repositoryId: string) => {
-    setDetailMode("local");
-    onSelectRepository(repositoryId);
+  const handleSkipToLocal = () => {
+    setAllowLocalBypass(true);
+    setScreen("browser");
   };
 
-  const handleSelectRemoteRepository = (repositoryId: string) => {
-    setDetailMode("remote");
+  const handleOpenLocalDetail = (repositoryId: string) => {
+    setDetailKind("local");
+    onSelectRepository(repositoryId);
+    setScreen("detail");
+  };
+
+  const handleOpenRemoteDetail = (repositoryId: string) => {
+    setDetailKind("remote");
     setSelectedRemoteId(repositoryId);
+    setScreen("detail");
   };
 
   return (
-    <div className="git-page git-page--flow">
-      {showOnboarding ? (
-        <GitOnboarding
+    <div className="git-page git-page--screened">
+      {screen === "auth" ? (
+        <GitAuthScreen
           deviceFlow={gitHubDeviceFlow}
           loading={gitHubLoading}
-          onAddRepository={onAddRepository}
           onCancelGitHubSignIn={onCancelGitHubSignIn}
+          onSkipToLocal={handleSkipToLocal}
+          onStartGitHubSignIn={onStartGitHubSignIn}
+        />
+      ) : screen === "browser" ? (
+        <GitRepositoryBrowserPage
+          gitHubLoading={gitHubLoading}
+          gitHubRepositories={remoteRepositories}
+          gitHubRepositoryPane={gitHubRepositoryPane}
+          gitHubSearchQuery={gitHubSearchQuery}
+          localLoading={loading}
+          remoteLoading={remoteLoading}
+          repositories={repositories}
+          search={search}
+          session={gitHubSession}
+          onAddRepository={onAddRepository}
+          onCopyGitHubCloneUrl={onCopyGitHubCloneUrl}
+          onDisconnectGitHub={onDisconnectGitHub}
+          onGitHubRepositoryPaneChange={onGitHubRepositoryPaneChange}
+          onGitHubSearchQueryChange={onGitHubSearchQueryChange}
+          onRefreshGitHubRepositories={onRefreshGitHubRepositories}
+          onRefreshRepositories={onRefreshRepositories}
+          onRemoveRepository={onRemoveRepository}
+          onSearchChange={onSearchChange}
+          onSelectLocalRepository={handleOpenLocalDetail}
+          onSelectRemoteRepository={handleOpenRemoteDetail}
           onStartGitHubSignIn={onStartGitHubSignIn}
         />
       ) : (
-        <div className="git-flow">
-          <aside className="git-flow__navigator">
-            <GitRepositoryNavigator
-              deviceFlow={gitHubDeviceFlow}
-              gitHubLoading={gitHubLoading}
-              localLoading={loading}
-              onAddRepository={onAddRepository}
-              onCancelGitHubSignIn={onCancelGitHubSignIn}
-              onCopyGitHubCloneUrl={onCopyGitHubCloneUrl}
-              onDisconnectGitHub={onDisconnectGitHub}
-              onGitHubRepositoryPaneChange={onGitHubRepositoryPaneChange}
-              onGitHubSearchQueryChange={onGitHubSearchQueryChange}
-              onRefreshGitHubRepositories={onRefreshGitHubRepositories}
-              onRefreshRepositories={onRefreshRepositories}
-              onRemoveRepository={onRemoveRepository}
-              onSearchChange={onSearchChange}
-              onSelectLocalRepository={handleSelectLocalRepository}
-              onSelectRemoteRepository={handleSelectRemoteRepository}
-              onStartGitHubSignIn={onStartGitHubSignIn}
-              repositories={repositories}
-              search={search}
-              selectedLocalRepositoryId={detailMode === "local" ? selectedRepository?.id ?? null : null}
-              selectedRemoteRepositoryId={detailMode === "remote" ? selectedRemoteId : null}
-              session={gitHubSession}
-              gitHubRepositoryPane={gitHubRepositoryPane}
-              gitHubRepositories={remoteRepositories}
-              gitHubRepositoryLoading={
-                gitHubRepositoryPane === "owned" ? gitHubRepositoryLoading : gitHubSearchLoading
-              }
-              gitHubSearchQuery={gitHubSearchQuery}
-            />
-          </aside>
-
-          <section className="git-page__workspace">
-            {detailMode === "local" && selectedRepository ? (
-              selectedRepository.error ? (
-                <div className="git-page__state">
-                  <span className="git-page__state-icon">
-                    <AlertTriangle size={18} />
-                  </span>
-                  <div className="git-page__state-body">
-                    <strong>Repository unavailable</strong>
-                    <span>{selectedRepository.error}</span>
-                  </div>
-                </div>
-              ) : selectedRepository.snapshot ? (
-                <GitRepositoryDetail
-                  branchName={branchName}
-                  busyAction={busyAction}
-                  commitMessage={commitMessage}
-                  onBranchNameChange={onBranchNameChange}
-                  onCheckoutBranch={onCheckoutBranch}
-                  onCommitAll={onCommitAll}
-                  onCommitMessageChange={onCommitMessageChange}
-                  onCopyReviewDraft={onCopyReviewDraft}
-                  onCreateBranch={onCreateBranch}
-                  onOpenRepositoryShell={onOpenRepositoryShell}
-                  onPublish={onPublish}
-                  repository={selectedRepository}
-                />
-              ) : (
-                <div className="git-page__state">
-                  <span className="git-page__state-icon">
-                    <RefreshCcw size={18} />
-                  </span>
-                  <div className="git-page__state-body">
-                    <strong>Inspecting repository</strong>
-                    <span>Hermes is reading branches, changes, and recent commits.</span>
-                  </div>
-                </div>
-              )
-            ) : selectedRemoteRepository ? (
-              <GitRemoteRepositoryDetail
-                onAddRepository={onAddRepository}
-                onCopyCloneUrl={onCopyGitHubCloneUrl}
-                repository={selectedRemoteRepository}
-                session={gitHubSession}
-              />
-            ) : (
-              <div className="git-page__state git-page__state--wide">
+        <section className="git-page__workspace">
+          <GitScreenHeader
+            detailKind={detailKind}
+            onBack={() => setScreen("browser")}
+            repositoryName={
+              detailKind === "local"
+                ? selectedRepository?.snapshot?.name ?? selectedRepository?.name ?? "Repository"
+                : selectedRemoteRepository?.fullName ?? "Repository"
+            }
+          />
+          {detailKind === "local" && selectedRepository ? (
+            selectedRepository.error ? (
+              <div className="git-page__state">
                 <span className="git-page__state-icon">
-                  <FolderGit2 size={18} />
+                  <AlertTriangle size={18} />
                 </span>
                 <div className="git-page__state-body">
-                  <strong>Select a repository</strong>
-                  <span>Pick a GitHub or local repository from the navigator to open its details here.</span>
+                  <strong>Repository unavailable</strong>
+                  <span>{selectedRepository.error}</span>
                 </div>
               </div>
-            )}
-          </section>
-        </div>
+            ) : selectedRepository.snapshot ? (
+              <GitRepositoryDetail
+                branchName={branchName}
+                busyAction={busyAction}
+                commitMessage={commitMessage}
+                onBranchNameChange={onBranchNameChange}
+                onCheckoutBranch={onCheckoutBranch}
+                onCommitAll={onCommitAll}
+                onCommitMessageChange={onCommitMessageChange}
+                onCopyReviewDraft={onCopyReviewDraft}
+                onCreateBranch={onCreateBranch}
+                onOpenRepositoryShell={onOpenRepositoryShell}
+                onPublish={onPublish}
+                repository={selectedRepository}
+              />
+            ) : (
+              <div className="git-page__state">
+                <span className="git-page__state-icon">
+                  <RefreshCcw size={18} />
+                </span>
+                <div className="git-page__state-body">
+                  <strong>Inspecting repository</strong>
+                  <span>Hermes is reading branches, changes, and recent commits.</span>
+                </div>
+              </div>
+            )
+          ) : selectedRemoteRepository ? (
+            <GitRemoteRepositoryDetail
+              onAddRepository={onAddRepository}
+              onCopyCloneUrl={onCopyGitHubCloneUrl}
+              repository={selectedRemoteRepository}
+              session={gitHubSession}
+            />
+          ) : (
+            <div className="git-page__state git-page__state--wide">
+              <span className="git-page__state-icon">
+                <FolderGit2 size={18} />
+              </span>
+              <div className="git-page__state-body">
+                <strong>Repository unavailable</strong>
+                <span>Go back to the repository list and choose another repository.</span>
+              </div>
+            </div>
+          )}
+        </section>
       )}
     </div>
   );
@@ -342,120 +354,85 @@ async function closeGitHubAuthWebview() {
   }
 }
 
-type GitOnboardingProps = {
-  deviceFlow: GitHubDeviceFlowRecord | null;
-  loading: boolean;
-  onStartGitHubSignIn: () => void;
-  onCancelGitHubSignIn: () => void;
-  onAddRepository: () => void;
-};
-
-function GitOnboarding({
+function GitAuthScreen({
   deviceFlow,
   loading,
   onStartGitHubSignIn,
   onCancelGitHubSignIn,
-  onAddRepository
-}: GitOnboardingProps) {
+  onSkipToLocal
+}: {
+  deviceFlow: GitHubDeviceFlowRecord | null;
+  loading: boolean;
+  onStartGitHubSignIn: () => void;
+  onCancelGitHubSignIn: () => void;
+  onSkipToLocal: () => void;
+}) {
   return (
-    <section className="git-onboarding">
-      <div className="git-onboarding__hero">
-        <p className="eyebrow">Git</p>
-        <h1>Connect GitHub first</h1>
-        <span>
-          Start with sign-in, then choose a repository, then Hermes turns the local checkout into your
-          commit and review surface.
-        </span>
-      </div>
+    <section className="git-auth-screen">
+      <div className="git-auth-screen__panel">
+        <div className="git-auth-screen__hero">
+          <p className="eyebrow">Git</p>
+          <h1>Connect GitHub first</h1>
+          <span>Sign in, then browse repositories, then open a repository detail page.</span>
+        </div>
 
-      <div className="git-onboarding__steps">
-        <article className="git-onboarding__step git-onboarding__step--active">
-          <strong>1. Sign in</strong>
-          <span>Authenticate GitHub inside Hermes to load your repositories.</span>
-        </article>
-        <article className="git-onboarding__step">
-          <strong>2. Pick a repository</strong>
-          <span>Browse your repositories or search public ones.</span>
-        </article>
-        <article className="git-onboarding__step">
-          <strong>3. Work locally</strong>
-          <span>Add the checkout you want to commit, branch, publish, and review.</span>
-        </article>
-      </div>
+        <div className="git-auth-screen__steps">
+          <article className="git-auth-screen__step git-auth-screen__step--active">
+            <strong>1. Sign in</strong>
+            <span>Authenticate GitHub inside Hermes to load your repositories.</span>
+          </article>
+          <article className="git-auth-screen__step">
+            <strong>2. Pick a repository</strong>
+            <span>Choose one from your GitHub list or your local checkouts.</span>
+          </article>
+          <article className="git-auth-screen__step">
+            <strong>3. Work locally</strong>
+            <span>Commit, branch, publish, and review from the repository detail page.</span>
+          </article>
+        </div>
 
-      <div className="git-onboarding__actions">
-        {deviceFlow ? (
-          <div className="git-onboarding__device">
-            <div className="git-onboarding__device-code">{deviceFlow.userCode}</div>
-            <div className="git-onboarding__device-copy">
-              <strong>Approve GitHub sign-in inside Hermes</strong>
-              <span>Enter this code in the GitHub page that just opened in-app.</span>
+        <div className="git-auth-screen__actions">
+          {deviceFlow ? (
+            <div className="git-auth-screen__device">
+              <div className="git-auth-screen__device-code">{deviceFlow.userCode}</div>
+              <div className="git-auth-screen__device-copy">
+                <strong>Approve GitHub sign-in inside Hermes</strong>
+                <span>Enter this code in the GitHub page that opened in-app.</span>
+              </div>
+              <button className="ghost-button" onClick={onCancelGitHubSignIn} type="button">
+                Cancel
+              </button>
             </div>
-            <button className="ghost-button" onClick={onCancelGitHubSignIn} type="button">
-              Cancel
-            </button>
-          </div>
-        ) : (
-          <>
-            <button className="primary-button" disabled={loading} onClick={onStartGitHubSignIn} type="button">
-              <Github size={14} />
-              {loading ? "Opening sign-in..." : "Sign in with GitHub"}
-            </button>
-            <button className="ghost-button" onClick={onAddRepository} type="button">
-              <Plus size={14} />
-              Skip to local repo
-            </button>
-          </>
-        )}
+          ) : (
+            <>
+              <button className="primary-button" disabled={loading} onClick={onStartGitHubSignIn} type="button">
+                <Github size={14} />
+                {loading ? "Opening sign-in..." : "Sign in with GitHub"}
+              </button>
+              <button className="ghost-button" onClick={onSkipToLocal} type="button">
+                <Plus size={14} />
+                Skip to local repo
+              </button>
+            </>
+          )}
+        </div>
       </div>
     </section>
   );
 }
 
-type GitRepositoryNavigatorProps = {
-  session: GitHubAuthSession | null;
-  deviceFlow: GitHubDeviceFlowRecord | null;
-  repositories: GitRepositoryView[];
-  selectedLocalRepositoryId: string | null;
-  selectedRemoteRepositoryId: string | null;
-  search: string;
-  localLoading: boolean;
-  gitHubLoading: boolean;
-  gitHubRepositoryPane: "owned" | "search";
-  gitHubRepositories: GitHubRepositoryRecord[];
-  gitHubRepositoryLoading: boolean;
-  gitHubSearchQuery: string;
-  onSearchChange: (value: string) => void;
-  onStartGitHubSignIn: () => void;
-  onCancelGitHubSignIn: () => void;
-  onDisconnectGitHub: () => void;
-  onRefreshGitHubRepositories: () => void;
-  onGitHubRepositoryPaneChange: (pane: "owned" | "search") => void;
-  onGitHubSearchQueryChange: (value: string) => void;
-  onCopyGitHubCloneUrl: (cloneUrl: string) => void;
-  onSelectRemoteRepository: (repositoryId: string) => void;
-  onAddRepository: () => void;
-  onRefreshRepositories: () => void;
-  onRemoveRepository: (repositoryId: string) => void;
-  onSelectLocalRepository: (repositoryId: string) => void;
-};
-
-function GitRepositoryNavigator({
+function GitRepositoryBrowserPage({
   session,
-  deviceFlow,
   repositories,
-  selectedLocalRepositoryId,
-  selectedRemoteRepositoryId,
   search,
   localLoading,
   gitHubLoading,
   gitHubRepositoryPane,
   gitHubRepositories,
-  gitHubRepositoryLoading,
+  remoteLoading,
   gitHubSearchQuery,
   onSearchChange,
   onStartGitHubSignIn,
-  onCancelGitHubSignIn,
   onDisconnectGitHub,
   onRefreshGitHubRepositories,
   onGitHubRepositoryPaneChange,
@@ -466,92 +443,122 @@ function GitRepositoryNavigator({
   onRefreshRepositories,
   onRemoveRepository,
   onSelectLocalRepository
-}: GitRepositoryNavigatorProps) {
+}: {
+  session: GitHubAuthSession | null;
+  repositories: GitRepositoryView[];
+  search: string;
+  localLoading: boolean;
+  gitHubLoading: boolean;
+  gitHubRepositoryPane: "owned" | "search";
+  gitHubRepositories: GitHubRepositoryRecord[];
+  remoteLoading: boolean;
+  gitHubSearchQuery: string;
+  onSearchChange: (value: string) => void;
+  onStartGitHubSignIn: () => void;
+  onDisconnectGitHub: () => void;
+  onRefreshGitHubRepositories: () => void;
+  onGitHubRepositoryPaneChange: (pane: "owned" | "search") => void;
+  onGitHubSearchQueryChange: (value: string) => void;
+  onCopyGitHubCloneUrl: (cloneUrl: string) => void;
+  onSelectRemoteRepository: (repositoryId: string) => void;
+  onAddRepository: () => void;
+  onRefreshRepositories: () => void;
+  onRemoveRepository: (repositoryId: string) => void;
+  onSelectLocalRepository: (repositoryId: string) => void;
+}) {
   const showSearch = gitHubRepositoryPane === "search";
 
   return (
-    <div className="git-nav">
-      <section className="git-nav__section">
-        <div className="git-nav__header">
-          <div>
-            <p className="eyebrow">Step 1</p>
-            <h2>GitHub</h2>
-          </div>
-          {session ? (
-            <div className="git-nav__account">
-              <UserRound size={14} />
-              <span>@{session.login}</span>
-            </div>
-          ) : null}
+    <section className="git-browser-page">
+      <div className="git-browser-page__header">
+        <div>
+          <p className="eyebrow">Git</p>
+          <h1>{session ? "Choose a repository" : "Local repositories"}</h1>
+          <span>
+            {session
+              ? "GitHub repositories are the default Git page. Pick one to inspect it or open a local checkout."
+              : "You skipped GitHub sign-in. Local repositories are still available."}
+          </span>
         </div>
-
-        {!session ? (
-          <div className="git-nav__connect">
-            <strong>Sign in to unlock your repositories</strong>
-            <span>Once connected, Hermes will show your GitHub list here.</span>
-            {deviceFlow ? (
-              <div className="git-nav__device">
-                <div className="git-nav__device-code">{deviceFlow.userCode}</div>
-                <button className="ghost-button" onClick={onCancelGitHubSignIn} type="button">
-                  Cancel
-                </button>
-              </div>
-            ) : (
-              <button className="primary-button" disabled={gitHubLoading} onClick={onStartGitHubSignIn} type="button">
-                <Github size={14} />
-                {gitHubLoading ? "Opening..." : "Sign in with GitHub"}
-              </button>
-            )}
+        {session ? (
+          <div className="git-nav__account">
+            <UserRound size={14} />
+            <span>@{session.login}</span>
           </div>
-        ) : (
-          <>
-            <div className="git-nav__toolbar">
-              <div className="git-nav__tabs">
-                <button
-                  className={`git-remote__tab ${gitHubRepositoryPane === "owned" ? "git-remote__tab--active" : ""}`}
-                  onClick={() => onGitHubRepositoryPaneChange("owned")}
-                  type="button"
-                >
-                  <HardDriveDownload size={13} />
-                  Your repos
-                </button>
-                <button
-                  className={`git-remote__tab ${gitHubRepositoryPane === "search" ? "git-remote__tab--active" : ""}`}
-                  onClick={() => onGitHubRepositoryPaneChange("search")}
-                  type="button"
-                >
-                  <Globe size={13} />
-                  Public search
-                </button>
-              </div>
-              <div className="git-nav__toolbar-actions">
-                {gitHubRepositoryPane === "owned" ? (
-                  <button className="ghost-button" disabled={gitHubRepositoryLoading} onClick={onRefreshGitHubRepositories} type="button">
-                    <RefreshCcw size={14} />
-                  </button>
-                ) : null}
-                <button className="ghost-button" disabled={gitHubLoading} onClick={onDisconnectGitHub} type="button">
-                  Disconnect
-                </button>
-              </div>
+        ) : null}
+      </div>
+
+      <div className="git-browser-page__grid">
+        <section className="git-nav__section">
+          <div className="git-nav__header">
+            <div>
+              <p className="eyebrow">GitHub</p>
+              <h2>Repositories</h2>
             </div>
+          </div>
 
-            {showSearch ? (
-              <label className="dashboard-search git-page__search git-nav__search">
-                <Search size={14} />
-                <input
-                  onChange={(event) => onGitHubSearchQueryChange(event.target.value)}
-                  placeholder="Search public repositories"
-                  value={gitHubSearchQuery}
-                />
-              </label>
-            ) : null}
-          </>
-        )}
-
-        <div className="git-nav__list">
           {session ? (
-            gitHubRepositoryLoading ? (
+            <>
+              <div className="git-nav__toolbar">
+                <div className="git-nav__tabs">
+                  <button
+                    className={`git-remote__tab ${gitHubRepositoryPane === "owned" ? "git-remote__tab--active" : ""}`}
+                    onClick={() => onGitHubRepositoryPaneChange("owned")}
+                    type="button"
+                  >
+                    <HardDriveDownload size={13} />
+                    Your repos
+                  </button>
+                  <button
+                    className={`git-remote__tab ${gitHubRepositoryPane === "search" ? "git-remote__tab--active" : ""}`}
+                    onClick={() => onGitHubRepositoryPaneChange("search")}
+                    type="button"
+                  >
+                    <Globe size={13} />
+                    Public search
+                  </button>
+                </div>
+                <div className="git-nav__toolbar-actions">
+                  {gitHubRepositoryPane === "owned" ? (
+                    <button className="ghost-button" disabled={remoteLoading} onClick={onRefreshGitHubRepositories} type="button">
+                      <RefreshCcw size={14} />
+                    </button>
+                  ) : null}
+                  <button className="ghost-button" disabled={gitHubLoading} onClick={onDisconnectGitHub} type="button">
+                    Disconnect
+                  </button>
+                </div>
+              </div>
+
+              {showSearch ? (
+                <label className="dashboard-search git-page__search git-nav__search">
+                  <Search size={14} />
+                  <input
+                    onChange={(event) => onGitHubSearchQueryChange(event.target.value)}
+                    placeholder="Search public repositories"
+                    value={gitHubSearchQuery}
+                  />
+                </label>
+              ) : null}
+            </>
+          ) : (
+            <div className="git-nav__connect">
+              <strong>GitHub is not connected</strong>
+              <span>Sign in if you want to browse GitHub repositories here.</span>
+              <button className="primary-button" onClick={onStartGitHubSignIn} type="button">
+                <Github size={14} />
+                Sign in with GitHub
+              </button>
+            </div>
+          )}
+
+          <div className="git-nav__list">
+            {!session ? (
+              <div className="git-nav__empty">
+                <strong>GitHub repository list is locked</strong>
+                <span>Connect GitHub to browse account repositories or search public repositories.</span>
+              </div>
+            ) : remoteLoading ? (
               <div className="git-nav__empty">
                 <strong>Loading repositories</strong>
                 <span>GitHub is responding.</span>
@@ -567,10 +574,7 @@ function GitRepositoryNavigator({
               </div>
             ) : (
               gitHubRepositories.map((repository) => (
-                <div
-                  className={`git-nav-item ${repository.id === selectedRemoteRepositoryId ? "git-nav-item--active" : ""}`}
-                  key={repository.id}
-                >
+                <div className="git-nav-item" key={repository.id}>
                   <button className="git-nav-item__main" onClick={() => onSelectRemoteRepository(repository.id)} type="button">
                     <div className="git-nav-item__body">
                       <strong>{repository.fullName}</strong>
@@ -585,94 +589,108 @@ function GitRepositoryNavigator({
                   </div>
                 </div>
               ))
-            )
-          ) : (
-            <div className="git-nav__empty">
-              <strong>Repository list appears after sign-in</strong>
-              <span>This panel becomes your GitHub repository picker once connected.</span>
-            </div>
-          )}
-        </div>
-      </section>
-
-      <section className="git-nav__section">
-        <div className="git-nav__header">
-          <div>
-            <p className="eyebrow">Step 2</p>
-            <h2>Local checkouts</h2>
+            )}
           </div>
-          <span className="git-page__meta">
-            {repositories.length} repo{repositories.length === 1 ? "" : "s"}
-          </span>
-        </div>
+        </section>
 
-        <div className="git-local__toolbar">
-          <label className="dashboard-search git-page__search">
-            <Search size={14} />
-            <input onChange={(event) => onSearchChange(event.target.value)} placeholder="Find a pinned repo" value={search} />
-          </label>
-          <div className="git-local__toolbar-actions">
-            <button className="ghost-button" disabled={localLoading} onClick={onRefreshRepositories} type="button">
-              <RefreshCcw size={14} />
-            </button>
-            <button className="primary-button" onClick={onAddRepository} type="button">
-              <Plus size={14} />
-              Add
-            </button>
-          </div>
-        </div>
-
-        <div className="git-nav__list">
-          {repositories.length === 0 ? (
-            <div className="git-nav__empty">
-              <strong>No local checkout pinned</strong>
-              <span>Add a local repository to open commit, branch, publish, and review details.</span>
+        <section className="git-nav__section">
+          <div className="git-nav__header">
+            <div>
+              <p className="eyebrow">Local</p>
+              <h2>Checkouts</h2>
             </div>
-          ) : (
-            repositories.map((repository) => {
-              const snapshot = repository.snapshot;
-              const changesCount =
-                (snapshot?.stagedCount ?? 0) + (snapshot?.changedCount ?? 0) + (snapshot?.untrackedCount ?? 0);
+            <span className="git-page__meta">
+              {repositories.length} repo{repositories.length === 1 ? "" : "s"}
+            </span>
+          </div>
 
-              return (
-                <div
-                  className={`git-nav-item ${repository.id === selectedLocalRepositoryId ? "git-nav-item--active" : ""}`}
-                  key={repository.id}
-                >
-                  <button className="git-nav-item__main" onClick={() => onSelectLocalRepository(repository.id)} type="button">
-                    <div className="git-nav-item__body">
-                      <strong>{snapshot?.name ?? repository.name}</strong>
-                      <span>{snapshot?.rootPath ?? repository.path}</span>
-                      {repository.error ? (
-                        <span className="git-repo-card__error">{repository.error}</span>
-                      ) : snapshot ? (
-                        <span>
-                          {snapshot.branch}
-                          {snapshot.upstream ? ` -> ${snapshot.upstream}` : ""}
+          <div className="git-local__toolbar">
+            <label className="dashboard-search git-page__search">
+              <Search size={14} />
+              <input onChange={(event) => onSearchChange(event.target.value)} placeholder="Find a pinned repo" value={search} />
+            </label>
+            <div className="git-local__toolbar-actions">
+              <button className="ghost-button" disabled={localLoading} onClick={onRefreshRepositories} type="button">
+                <RefreshCcw size={14} />
+              </button>
+              <button className="primary-button" onClick={onAddRepository} type="button">
+                <Plus size={14} />
+                Add
+              </button>
+            </div>
+          </div>
+
+          <div className="git-nav__list">
+            {repositories.length === 0 ? (
+              <div className="git-nav__empty">
+                <strong>No local checkout pinned</strong>
+                <span>Add a local repository to open commit, branch, publish, and review details.</span>
+              </div>
+            ) : (
+              repositories.map((repository) => {
+                const snapshot = repository.snapshot;
+                const changesCount =
+                  (snapshot?.stagedCount ?? 0) + (snapshot?.changedCount ?? 0) + (snapshot?.untrackedCount ?? 0);
+
+                return (
+                  <div className="git-nav-item" key={repository.id}>
+                    <button className="git-nav-item__main" onClick={() => onSelectLocalRepository(repository.id)} type="button">
+                      <div className="git-nav-item__body">
+                        <strong>{snapshot?.name ?? repository.name}</strong>
+                        <span>{snapshot?.rootPath ?? repository.path}</span>
+                        {repository.error ? (
+                          <span className="git-repo-card__error">{repository.error}</span>
+                        ) : snapshot ? (
+                          <span>
+                            {snapshot.branch}
+                            {snapshot.upstream ? ` -> ${snapshot.upstream}` : ""}
+                          </span>
+                        ) : (
+                          <span>Inspecting repository...</span>
+                        )}
+                      </div>
+                    </button>
+                    <div className="git-nav-item__meta">
+                      {snapshot ? (
+                        <span className={`git-pill ${snapshot.clean ? "git-pill--clean" : ""}`}>
+                          {snapshot.clean ? "Clean" : `${changesCount} changed`}
                         </span>
                       ) : (
-                        <span>Inspecting repository...</span>
+                        <span className="git-pill">Loading</span>
                       )}
+                      <button className="text-button" onClick={() => onRemoveRepository(repository.id)} type="button">
+                        <Trash2 size={14} />
+                      </button>
                     </div>
-                  </button>
-                  <div className="git-nav-item__meta">
-                    {snapshot ? (
-                      <span className={`git-pill ${snapshot.clean ? "git-pill--clean" : ""}`}>
-                        {snapshot.clean ? "Clean" : `${changesCount} changed`}
-                      </span>
-                    ) : (
-                      <span className="git-pill">Loading</span>
-                    )}
-                    <button className="text-button" onClick={() => onRemoveRepository(repository.id)} type="button">
-                      <Trash2 size={14} />
-                    </button>
                   </div>
-                </div>
-              );
-            })
-          )}
-        </div>
-      </section>
+                );
+              })
+            )}
+          </div>
+        </section>
+      </div>
+    </section>
+  );
+}
+
+function GitScreenHeader({
+  repositoryName,
+  detailKind,
+  onBack
+}: {
+  repositoryName: string;
+  detailKind: "local" | "remote";
+  onBack: () => void;
+}) {
+  return (
+    <div className="git-screen-header">
+      <button className="ghost-button" onClick={onBack} type="button">
+        Back to repositories
+      </button>
+      <div className="git-screen-header__copy">
+        <p className="eyebrow">{detailKind === "local" ? "Local repository" : "GitHub repository"}</p>
+        <strong>{repositoryName}</strong>
+      </div>
     </div>
   );
 }
@@ -726,7 +744,7 @@ function GitRemoteRepositoryDetail({
         <section className="git-panel">
           <div className="git-panel__header">
             <div>
-              <p className="eyebrow">Step 3</p>
+              <p className="eyebrow">Next step</p>
               <h3>Open locally in Hermes</h3>
             </div>
           </div>
@@ -812,12 +830,7 @@ function GitRepositoryDetail({
             <span>{snapshot.rootPath}</span>
           </div>
           <div className="git-detail__masthead-actions">
-            <button
-              className="ghost-button"
-              disabled={isShellBusy}
-              onClick={() => onOpenRepositoryShell(repository.id)}
-              type="button"
-            >
+            <button className="ghost-button" disabled={isShellBusy} onClick={() => onOpenRepositoryShell(repository.id)} type="button">
               <TerminalSquare size={14} />
               {isShellBusy ? "Opening..." : "Open shell"}
             </button>
@@ -836,7 +849,6 @@ function GitRepositoryDetail({
             </button>
           </div>
         </div>
-
         <div className="git-detail__masthead-meta">
           <span className="git-pill git-pill--active">
             <GitBranch size={12} />
@@ -866,7 +878,6 @@ function GitRepositoryDetail({
                 <h3>Commit and branch</h3>
               </div>
             </div>
-
             <div className="git-detail__form-stack">
               <label className="field field--full">
                 <span>Commit message</span>
@@ -915,7 +926,6 @@ function GitRepositoryDetail({
                 <h3>Draft state</h3>
               </div>
             </div>
-
             {snapshot.review ? (
               <div className="git-review">
                 <div className="git-review__headline">
@@ -945,11 +955,9 @@ function GitRepositoryDetail({
                 <h3>Switch locally</h3>
               </div>
             </div>
-
             <div className="git-branch-list">
               {snapshot.branches.map((branch) => {
                 const checkoutBusy = busyAction === `checkout:${repository.id}:${branch.name}`;
-
                 return (
                   <div className="git-branch-row" key={branch.name}>
                     <div className="git-branch-row__body">
@@ -981,7 +989,6 @@ function GitRepositoryDetail({
                 <h3>Recent commits</h3>
               </div>
             </div>
-
             {snapshot.recentCommits.length === 0 ? (
               <div className="git-panel__empty">
                 <strong>No commit history</strong>
@@ -1015,7 +1022,6 @@ function GitRepositoryDetail({
               {snapshot.changes.length} file{snapshot.changes.length === 1 ? "" : "s"}
             </span>
           </div>
-
           {snapshot.changes.length === 0 ? (
             <div className="git-panel__empty">
               <strong>Nothing pending</strong>
