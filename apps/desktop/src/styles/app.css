@@ -1774,6 +1774,150 @@ h3 {
   overflow: auto;
 }
 
+.git-page--screened {
+  padding: 12px;
+}
+
+.git-auth-screen {
+  display: grid;
+  place-items: center;
+  flex: 1;
+  min-height: 0;
+  padding: 12px;
+}
+
+.git-auth-screen__panel,
+.git-browser-page,
+.git-screen-header {
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03) 0%, rgba(255, 255, 255, 0) 100%),
+    #090b0f;
+}
+
+.git-auth-screen__panel {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  width: min(100%, 980px);
+  padding: 28px;
+}
+
+.git-auth-screen__hero,
+.git-auth-screen__step,
+.git-auth-screen__device-copy,
+.git-browser-page__header,
+.git-screen-header__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.git-auth-screen__hero h1,
+.git-browser-page__header h1 {
+  line-height: 1.02;
+}
+
+.git-auth-screen__hero span,
+.git-auth-screen__step span,
+.git-auth-screen__device-copy span,
+.git-browser-page__header span,
+.git-screen-header__copy strong {
+  color: var(--text-soft);
+}
+
+.git-auth-screen__steps,
+.git-auth-screen__actions,
+.git-auth-screen__device,
+.git-browser-page__header,
+.git-browser-page__grid,
+.git-screen-header {
+  display: flex;
+  gap: 12px;
+}
+
+.git-auth-screen__steps,
+.git-browser-page__grid {
+  align-items: stretch;
+}
+
+.git-auth-screen__step {
+  flex: 1;
+  min-height: 112px;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.git-auth-screen__step--active {
+  border-color: var(--border-strong);
+}
+
+.git-auth-screen__actions {
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.git-auth-screen__device {
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.git-auth-screen__device-code {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #07090c;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+}
+
+.git-browser-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+  padding: 16px;
+  overflow: hidden;
+}
+
+.git-browser-page__header {
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.git-browser-page__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  flex: 1;
+  min-height: 0;
+}
+
+.git-browser-page__gate {
+  display: grid;
+  place-items: center;
+  flex: 1;
+  min-height: 0;
+}
+
+.git-screen-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+}
+
 .git-page--flow {
   padding: 12px;
 }
@@ -2060,6 +2204,7 @@ h3 {
 }
 
 @media (max-width: 1280px) {
+  .git-browser-page__grid,
   .git-flow,
   .git-detail__workspace {
     grid-template-columns: 1fr;
@@ -2067,6 +2212,10 @@ h3 {
 }
 
 @media (max-width: 720px) {
+  .git-auth-screen__steps,
+  .git-auth-screen__actions,
+  .git-auth-screen__device,
+  .git-browser-page__header,
   .git-onboarding__steps,
   .git-remote__header,
   .git-remote__toolbar,
@@ -2077,6 +2226,7 @@ h3 {
   .git-nav-item,
   .git-onboarding__actions,
   .git-onboarding__device,
+  .git-screen-header,
   .git-detail__masthead-main,
   .git-branch-row,
   .git-commit-row,
