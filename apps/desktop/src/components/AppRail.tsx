@@ -1,6 +1,5 @@
-import { Boxes, HardDrive, KeyRound, Logs } from "lucide-react";
-
-type ViewState = "dashboard" | "workspace" | "keychain";
+import { Boxes, FolderGit2, HardDrive, KeyRound, Logs, TerminalSquare } from "lucide-react";
+import type { ViewState } from "../lib/app";
 
 type AppRailProps = {
   view: ViewState;
@@ -24,6 +23,15 @@ export function AppRail({ view, onNavigate }: AppRailProps) {
             <span>Dashboard</span>
           </button>
           <button
+            className={`rail__item ${view === "sessions" ? "rail__item--active" : ""}`}
+            onClick={() => onNavigate("sessions")}
+            title="Sessions"
+            type="button"
+          >
+            <TerminalSquare size={16} />
+            <span>Sessions</span>
+          </button>
+          <button
             className={`rail__item ${view === "keychain" ? "rail__item--active" : ""}`}
             onClick={() => onNavigate("keychain")}
             title="Keychain"
@@ -31,6 +39,15 @@ export function AppRail({ view, onNavigate }: AppRailProps) {
           >
             <KeyRound size={16} />
             <span>Keychain</span>
+          </button>
+          <button
+            className={`rail__item ${view === "git" ? "rail__item--active" : ""}`}
+            onClick={() => onNavigate("git")}
+            title="Git"
+            type="button"
+          >
+            <FolderGit2 size={16} />
+            <span>Git</span>
           </button>
           <button className="rail__item" title="SFTP" type="button">
             <Boxes size={16} />

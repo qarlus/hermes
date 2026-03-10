@@ -17,8 +17,10 @@ chrono = { version = "0.4.41", features = ["clock", "serde"] }
 keyring = "3.6.2"
 portable-pty = "0.8.1"
 rand = "0.8.5"
+reqwest = { version = "0.12.23", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rusqlite = { version = "0.32.1", features = ["bundled"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 tauri = { version = "2.2.5", features = [] }
+tauri-plugin-dialog = "2.2.0"
 uuid = { version = "1.16.0", features = ["serde", "v4"] }

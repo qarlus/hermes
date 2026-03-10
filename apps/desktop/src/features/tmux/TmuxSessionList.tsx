@@ -41,9 +41,14 @@ export function TmuxSessionList({
           <p>Checking tmux...</p>
         </div>
       ) : sessions.length === 0 ? (
-        <div className="tmux-panel__empty">
-          <p>No active tmux sessions</p>
-          <span>When the server is reachable, active remote sessions will appear here.</span>
+        <div className="workspace-home__empty-state">
+          <span className="workspace-home__empty-icon">
+            <TerminalSquare size={16} />
+          </span>
+          <div className="workspace-home__empty-body">
+            <strong>No remote tmux sessions detected</strong>
+            <span>Once the host responds, attachable sessions will appear here.</span>
+          </div>
         </div>
       ) : (
         <div className="tmux-session-list">

@@ -1,9 +1,15 @@
 import { KeyRound, LockKeyhole, Shield, X } from "lucide-react";
-import type { ProjectRecord, ServerAuthKind, ServerInput } from "@hermes/core";
+import type {
+  KeychainItemRecord,
+  ProjectRecord,
+  ServerAuthKind,
+  ServerInput
+} from "@hermes/core";
 
 interface ServerEditorProps {
   draft: ServerInput;
   projects: ProjectRecord[];
+  keychainItems: KeychainItemRecord[];
   mode: "create" | "edit";
   saving: boolean;
   onChange: <K extends keyof ServerInput>(field: K, value: ServerInput[K]) => void;
@@ -17,7 +23,11 @@ const authOptions: Array<{
   label: string;
   description: string;
 }> = [
-  { value: "default", label: "System", description: "Use local ssh config, agent, or prompts." },
+  {
+    value: "default",
+    label: "System",
+    description: "Use local ssh config, agent, or prompts. Hermes records the resolved device key when available."
+  },
   { value: "sshKey", label: "SSH Key", description: "Save a private key path in the keychain." },
   { value: "password", label: "Password", description: "Save a password in the keychain." }
 ];
@@ -25,6 +35,7 @@ const authOptions: Array<{
 export function ServerEditor({
   draft,
   projects,
+  keychainItems,
   mode,
   saving,
   onChange,
@@ -32,14 +43,42 @@ export function ServerEditor({
   onDelete,
   onClose
 }: ServerEditorProps) {
+  const matchingKeychainItems = keychainItems.filter((item) => item.kind === draft.authKind);
+  const hasSelectedCredential =
+    draft.credentialId !== null &&
+    matchingKeychainItems.some((item) => item.id === draft.credentialId);
   const secretPlaceholder =
     draft.authKind === "password"
-      ? mode === "edit"
-        ? "Encrypted in keychain. Enter a new password to replace it."
-        : "Password"
-      : mode === "edit"
-        ? "Encrypted in keychain. Enter a new key path to replace it."
+      ? hasSelectedCredential
+        ? "Saved in keychain. Enter a new password to rotate it."
+        : mode === "edit"
+          ? "Encrypted in keychain. Enter a new password to replace it."
+          : "Password"
+      : hasSelectedCredential
+        ? "Saved in keychain. Enter a new key path to rotate it."
+        : mode === "edit"
+          ? "Encrypted in keychain. Enter a new key path to replace it."
         : "~/.ssh/id_ed25519";
+
+  const handleCredentialPick = (credentialId: string) => {
+    if (!credentialId) {
+      onChange("credentialId", null);
+      onChange("credentialName", "");
+      onChange("credentialSecret", "");
+      return;
+    }
+
+    const selectedCredential = matchingKeychainItems.find((item) => item.id === credentialId);
+    if (!selectedCredential) {
+      return;
+    }
+
+    onChange("credentialId", selectedCredential.id);
+    onChange("credentialName", selectedCredential.name);
+    onChange("credentialSecret", "");
+  };
+
+  const credentialNameReadOnly = hasSelectedCredential;
 
   return (
     <div className="modal-backdrop" onClick={onClose} role="presentation">
@@ -126,6 +165,17 @@ export function ServerEditor({
                   value={draft.username}
                 />
               </label>
+
+              <label className="field field--full">
+                <span>Dashboard shortcut</span>
+                <button
+                  className={`toggle ${draft.isFavorite ? "toggle--active" : ""}`}
+                  onClick={() => onChange("isFavorite", !draft.isFavorite)}
+                  type="button"
+                >
+                  {draft.isFavorite ? "Show in favourites" : "Hidden from favourites"}
+                </button>
+              </label>
             </div>
           </section>
 
@@ -160,6 +210,26 @@ export function ServerEditor({
 
             {draft.authKind !== "default" ? (
               <div className="form-section__grid">
+                <label className="field field--full">
+                  <span>Saved credential</span>
+                  <select
+                    onChange={(event) => handleCredentialPick(event.target.value)}
+                    value={draft.credentialId ?? ""}
+                  >
+                    <option value="">Create new saved credential</option>
+                    {matchingKeychainItems.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.name} ({item.usageCount})
+                      </option>
+                    ))}
+                  </select>
+                  <small className="field-hint">
+                    {hasSelectedCredential
+                      ? "This server will reuse the selected saved credential."
+                      : "Pick an existing saved credential or create a new one for this server."}
+                  </small>
+                </label>
+
                 <label className="field">
                   <span>Credential name</span>
                   <input
@@ -167,6 +237,7 @@ export function ServerEditor({
                     placeholder={
                       draft.authKind === "password" ? "Production password" : "Primary SSH key"
                     }
+                    readOnly={credentialNameReadOnly}
                     value={draft.credentialName}
                   />
                 </label>

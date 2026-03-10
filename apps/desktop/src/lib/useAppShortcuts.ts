@@ -1,7 +1,8 @@
 import { useEffect } from "react";
+import type { ViewState } from "./app";
 
 type UseAppShortcutsOptions = {
-  view: "dashboard" | "workspace" | "keychain";
+  view: ViewState;
   selectedProjectId: string | null;
   selectedServerId: string | null;
   onCreateProject: () => void;

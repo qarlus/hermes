@@ -1,6 +1,5 @@
 import { ArrowLeft, FolderPlus, Search, Settings2 } from "lucide-react";
-
-type ViewState = "dashboard" | "workspace" | "keychain";
+import type { ViewState } from "../lib/app";
 
 type AppHeaderProps = {
   view: ViewState;
@@ -29,7 +28,15 @@ export function AppHeader({
     <header className="main-panel__header">
       <div className="main-panel__heading">
         <p className="eyebrow">
-          {view === "workspace" ? "Workspace" : view === "keychain" ? "Secrets" : "Dashboard"}
+          {view === "workspace"
+            ? "Workspace"
+            : view === "sessions"
+              ? "Sessions"
+              : view === "keychain"
+                ? "Secrets"
+                : view === "git"
+                  ? "Git"
+                : "Dashboard"}
         </p>
         <h2>{title}</h2>
         <span>{subtitle}</span>

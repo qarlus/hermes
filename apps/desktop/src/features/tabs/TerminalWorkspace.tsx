@@ -1,7 +1,6 @@
-import { useEffect, useEffectEvent, useRef, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Plus } from "lucide-react";
-import { CanvasAddon } from "@xterm/addon-canvas";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "xterm";
 import type {
@@ -30,7 +29,6 @@ interface TerminalWorkspaceProps {
 interface TerminalHandle {
   terminal: Terminal;
   fitAddon: FitAddon;
-  canvasAddon?: CanvasAddon;
 }
 
 export function TerminalWorkspace({
@@ -49,13 +47,13 @@ export function TerminalWorkspace({
 }: TerminalWorkspaceProps) {
   const handlesRef = useRef<Map<string, TerminalHandle>>(new Map());
   const buffersRef = useRef<Map<string, string[]>>(new Map());
-  const activeSessionIdsRef = useRef<Set<string>>(new Set());
-  const handleExit = useEffectEvent(onExit);
-  const handleStatus = useEffectEvent(onStatus);
+  const onExitRef = useRef(onExit);
+  const onStatusRef = useRef(onStatus);
 
   useEffect(() => {
-    activeSessionIdsRef.current = new Set(tabs.map((tab) => tab.id));
-  }, [tabs]);
+    onExitRef.current = onExit;
+    onStatusRef.current = onStatus;
+  }, [onExit, onStatus]);
 
   useEffect(() => {
     if (!isTauriRuntime()) {
@@ -80,19 +78,15 @@ export function TerminalWorkspace({
           return;
         }
 
-        if (!activeSessionIdsRef.current.has(event.payload.sessionId)) {
-          return;
-        }
-
         const nextBuffer = buffersRef.current.get(event.payload.sessionId) ?? [];
         nextBuffer.push(event.payload.data);
         buffersRef.current.set(event.payload.sessionId, nextBuffer);
       }),
       listen<TerminalExitEvent>("terminal:exit", (event) => {
-        handleExit(event.payload);
+        onExitRef.current(event.payload);
       }),
       listen<TerminalStatusEvent>("terminal:status", (event) => {
-        handleStatus(event.payload);
+        onStatusRef.current(event.payload);
       })
     ]).then((listeners) => {
       const nextDispose = () => listeners.forEach((unlisten) => unlisten());
@@ -108,7 +102,7 @@ export function TerminalWorkspace({
       cancelled = true;
       dispose?.();
     };
-  }, [handleExit, handleStatus]);
+  }, []);
 
   useEffect(() => {
     if (!activeTabId) {
@@ -127,7 +121,7 @@ export function TerminalWorkspace({
 
   return (
     <section className="workspace">
-      {visible && (tabs.length > 0 || emptyTabsLabel) ? (
+      {visible && (tabs.length > 0 || emptyTabsLabel || onNewTab) ? (
         <div className="workspace__tabs">
           {tabs.length === 0 && emptyTabsLabel ? (
             <div className="workspace__tabs-empty">{emptyTabsLabel}</div>
@@ -259,21 +253,27 @@ function TerminalPane({
   const activeRef = useRef(active);
   const lastSizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const syncTimersRef = useRef<number[]>([]);
-  const emitInput = useEffectEvent(onInput);
-  const emitResize = useEffectEvent(onResize);
-  const emitReady = useEffectEvent(onReady);
-  const emitTeardown = useEffectEvent(onTeardown);
+  const onInputRef = useRef(onInput);
+  const onResizeRef = useRef(onResize);
+  const onReadyRef = useRef(onReady);
+  const onTeardownRef = useRef(onTeardown);
 
   useEffect(() => {
     activeRef.current = active;
   }, [active]);
 
   useEffect(() => {
+    onInputRef.current = onInput;
+    onResizeRef.current = onResize;
+    onReadyRef.current = onReady;
+    onTeardownRef.current = onTeardown;
+  }, [onInput, onResize, onReady, onTeardown]);
+
+  useEffect(() => {
     const terminal = new Terminal({
       fontFamily: '"JetBrains Mono Variable", "JetBrains Mono", monospace',
       fontSize: 13,
       lineHeight: 1.35,
-      convertEol: true,
       cursorBlink: true,
       scrollOnUserInput: true,
       allowTransparency: false,
@@ -307,27 +307,23 @@ function TerminalPane({
     });
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
-    let canvasAddon: CanvasAddon | undefined;
-
-    try {
-      canvasAddon = new CanvasAddon();
-      terminal.loadAddon(canvasAddon);
-    } catch (error) {
-      console.warn("canvas renderer unavailable", error);
-    }
-
     if (hostRef.current) {
       terminal.open(hostRef.current);
     }
 
-    const dataDisposable = terminal.onData((data) => emitInput(sessionId, data));
-    const handle = { terminal, fitAddon, canvasAddon };
+    const dataDisposable = terminal.onData((data) => onInputRef.current(sessionId, data));
+    const handle = { terminal, fitAddon };
     handleRef.current = handle;
-    emitReady(handle);
+    onReadyRef.current(handle);
 
     const syncSize = (force = false) => {
       const currentHandle = handleRef.current;
-      if (!currentHandle) {
+      const host = hostRef.current;
+      if (!currentHandle || !host) {
+        return;
+      }
+
+      if (host.clientWidth === 0 || host.clientHeight === 0) {
         return;
       }
 
@@ -337,14 +333,16 @@ function TerminalPane({
         rows: currentHandle.terminal.rows
       };
       const lastSize = lastSizeRef.current;
+      if (nextSize.cols < 20 || nextSize.rows < 2) {
+        return;
+      }
+
       if (!force && lastSize?.cols === nextSize.cols && lastSize?.rows === nextSize.rows) {
-        currentHandle.terminal.refresh(0, Math.max(currentHandle.terminal.rows - 1, 0));
         return;
       }
 
       lastSizeRef.current = nextSize;
-      currentHandle.terminal.refresh(0, Math.max(currentHandle.terminal.rows - 1, 0));
-      emitResize(sessionId, nextSize.cols, nextSize.rows);
+      onResizeRef.current(sessionId, nextSize.cols, nextSize.rows);
     };
 
     const scheduleSync = (delay = 0, force = false) => {
@@ -358,8 +356,7 @@ function TerminalPane({
     };
 
     scheduleSync(0, true);
-    scheduleSync(32, true);
-    scheduleSync(96, true);
+    scheduleSync(64, true);
 
     const resizeObserver = new ResizeObserver(() => {
       scheduleSync(0);
@@ -379,9 +376,9 @@ function TerminalPane({
       syncTimersRef.current.forEach((timer) => window.clearTimeout(timer));
       syncTimersRef.current = [];
       handleRef.current = null;
-      emitTeardown();
+      onTeardownRef.current();
     };
-  }, [emitInput, emitReady, emitResize, emitTeardown, sessionId]);
+  }, [sessionId]);
 
   useEffect(() => {
     const currentHandle = handleRef.current;
@@ -396,21 +393,23 @@ function TerminalPane({
       }
 
       nextHandle.fitAddon.fit();
-      nextHandle.terminal.refresh(0, Math.max(nextHandle.terminal.rows - 1, 0));
       const nextSize = { cols: nextHandle.terminal.cols, rows: nextHandle.terminal.rows };
       const lastSize = lastSizeRef.current;
-      if (lastSize?.cols !== nextSize.cols || lastSize?.rows !== nextSize.rows) {
+      if (
+        nextSize.cols >= 20 &&
+        nextSize.rows >= 2 &&
+        (lastSize?.cols !== nextSize.cols || lastSize?.rows !== nextSize.rows)
+      ) {
         lastSizeRef.current = nextSize;
-        emitResize(sessionId, nextSize.cols, nextSize.rows);
+        onResizeRef.current(sessionId, nextSize.cols, nextSize.rows);
       }
       nextHandle.terminal.focus();
     });
-  }, [active, emitResize, sessionId]);
+  }, [active, sessionId]);
 
   return (
-    <div
-      className={`terminal-pane ${active ? "terminal-pane--active" : ""}`}
-      ref={hostRef}
-    />
+    <div className={`terminal-pane ${active ? "terminal-pane--active" : ""}`}>
+      <div className="terminal-pane__surface" ref={hostRef} />
+    </div>
   );
 }

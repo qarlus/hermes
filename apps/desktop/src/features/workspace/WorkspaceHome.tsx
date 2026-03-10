@@ -1,11 +1,19 @@
-import { Plus } from "lucide-react";
-import { buildSshTarget, type ProjectRecord, type ServerRecord, type TmuxSessionRecord } from "@hermes/core";
+import { Play, Plus, TerminalSquare } from "lucide-react";
+import {
+  buildSshTarget,
+  serverDisplayLabel,
+  type ProjectRecord,
+  type ServerRecord,
+  type TerminalTab,
+  type TmuxSessionRecord
+} from "@hermes/core";
 import { ServerList } from "../servers/ServerList";
 import { TmuxSessionList } from "../tmux/TmuxSessionList";
 
 interface WorkspaceHomeProps {
   project: ProjectRecord;
   servers: ServerRecord[];
+  activeSessions: TerminalTab[];
   selectedServerId: string | null;
   selectedServer: ServerRecord | null;
   tmuxSessions: TmuxSessionRecord[];
@@ -13,6 +21,7 @@ interface WorkspaceHomeProps {
   onSelectServer: (serverId: string) => void;
   onConnect: (serverId: string, tmuxSession?: string) => void;
   onEditServer: (serverId: string) => void;
+  onOpenSession: (tabId: string) => void;
   onRefreshTmux: () => void;
   onCreateServer: () => void;
 }
@@ -20,6 +29,7 @@ interface WorkspaceHomeProps {
 export function WorkspaceHome({
   project,
   servers,
+  activeSessions,
   selectedServerId,
   selectedServer,
   tmuxSessions,
@@ -27,27 +37,31 @@ export function WorkspaceHome({
   onSelectServer,
   onConnect,
   onEditServer,
+  onOpenSession,
   onRefreshTmux,
   onCreateServer
 }: WorkspaceHomeProps) {
   return (
     <div className="workspace-home">
-      <section className="workspace-home__panel workspace-home__panel--servers">
-        <div className="workspace-home__panel-header">
-          <div>
-            <p className="eyebrow">Servers</p>
-            <h2>{servers.length} configured</h2>
-            <span>
-              {project.description || "Accounts and SSH targets inside this workspace."}
-            </span>
+      <div className="workspace-home__board">
+        <section className="workspace-home__section">
+          <div className="workspace-home__header">
+            <div>
+              <p className="eyebrow">Servers</p>
+              <h2>Workspace servers</h2>
+              <span>{project.description || "Accounts and SSH targets inside this workspace."}</span>
+            </div>
+            <div className="workspace-home__header-actions">
+              <span className="workspace-home__meta">
+                {servers.length} server{servers.length === 1 ? "" : "s"}
+              </span>
+              <button className="ghost-button" onClick={onCreateServer} type="button">
+                <Plus size={14} />
+                Server
+              </button>
+            </div>
           </div>
-          <button className="ghost-button" onClick={onCreateServer} type="button">
-            <Plus size={14} />
-            Server
-          </button>
-        </div>
 
-        <div className="workspace-home__panel-body">
           <ServerList
             onCreate={onCreateServer}
             servers={servers}
@@ -56,39 +70,100 @@ export function WorkspaceHome({
             onSelect={onSelectServer}
             selectedServerId={selectedServerId}
           />
-        </div>
-      </section>
+        </section>
 
-      <section className="workspace-home__panel workspace-home__panel--sessions">
-        <div className="workspace-home__panel-header">
-          <div>
-            <p className="eyebrow">Tmux Sessions</p>
-            <h3>{selectedServer ? selectedServer.name || selectedServer.hostname : "No server selected"}</h3>
-            <span>
-              {selectedServer
-                ? `${buildSshTarget(selectedServer)} / port ${selectedServer.port}`
-                : "Choose a server to inspect tmux sessions and reconnect."}
+        <section className="workspace-home__section">
+          <div className="workspace-home__header">
+            <div>
+              <p className="eyebrow">Sessions</p>
+              <h2>{selectedServer ? selectedServer.name || selectedServer.hostname : "Tmux sessions"}</h2>
+              <span>
+                {selectedServer
+                  ? `${buildSshTarget(selectedServer)} / port ${selectedServer.port}`
+                  : "Choose a server to inspect tmux sessions and reconnect."}
+              </span>
+            </div>
+            <span className="workspace-home__meta">
+              {activeSessions.length} live / {selectedServer ? tmuxSessions.length : 0} tmux
             </span>
           </div>
-        </div>
 
-        <div className="workspace-home__panel-body workspace-home__panel-body--detail">
-          {selectedServer ? (
-            <TmuxSessionList
-              embedded
-              loading={tmuxLoading}
-              onConnect={(sessionName) => onConnect(selectedServer.id, sessionName)}
-              onRefresh={onRefreshTmux}
-              sessions={tmuxSessions}
-            />
-          ) : (
-            <div className="tmux-panel__empty">
-              <p>No server selected</p>
-              <span>Select a server on the left to inspect and rejoin active tmux sessions.</span>
+          <div className="workspace-home__sessions">
+            <div className="workspace-home__session-group">
+              <div className="workspace-home__session-header">
+                <p className="eyebrow">Active</p>
+              </div>
+              {activeSessions.length === 0 ? (
+                <div className="workspace-home__empty-state">
+                  <span className="workspace-home__empty-icon">
+                    <TerminalSquare size={16} />
+                  </span>
+                  <div className="workspace-home__empty-body">
+                    <strong>Session surface is clear</strong>
+                    <span>Open a server above to start a terminal. Live connections will land here.</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="workspace-home__session-list">
+                  {activeSessions.map((session) => {
+                    const server = servers.find((candidate) => candidate.id === session.serverId);
+
+                    return (
+                      <button
+                        className="workspace-home__session-row"
+                        key={session.id}
+                        onClick={() => onOpenSession(session.id)}
+                        type="button"
+                      >
+                        <div className="workspace-home__session-main">
+                          <span className={`status-dot status-dot--${session.status}`} />
+                          <div className="workspace-home__session-body">
+                            <strong>{session.title}</strong>
+                            <span>
+                              {server
+                                ? `${serverDisplayLabel(server)} / ${buildSshTarget(server)}`
+                                : "Saved terminal session"}
+                            </span>
+                          </div>
+                        </div>
+                        <span className="workspace-home__session-action">
+                          Open
+                          <Play size={12} />
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
-          )}
-        </div>
-      </section>
+
+            <div className="workspace-home__session-group">
+              <div className="workspace-home__session-header">
+                <p className="eyebrow">Remote Tmux</p>
+              </div>
+            {selectedServer ? (
+              <TmuxSessionList
+                embedded
+                loading={tmuxLoading}
+                onConnect={(sessionName) => onConnect(selectedServer.id, sessionName)}
+                onRefresh={onRefreshTmux}
+                sessions={tmuxSessions}
+              />
+            ) : (
+              <div className="workspace-home__empty-state">
+                <span className="workspace-home__empty-icon">
+                  <TerminalSquare size={16} />
+                </span>
+                <div className="workspace-home__empty-body">
+                  <strong>Remote tmux is standing by</strong>
+                  <span>Select a server above to inspect and rejoin its active tmux sessions.</span>
+                </div>
+              </div>
+            )}
+            </div>
+          </div>
+        </section>
+      </div>
     </div>
   );
 }

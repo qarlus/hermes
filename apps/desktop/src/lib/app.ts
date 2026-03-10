@@ -9,7 +9,7 @@ export type InspectorState =
   | { kind: "project"; mode: "create" | "edit" }
   | { kind: "server"; mode: "create" | "edit" };
 
-export type ViewState = "dashboard" | "workspace" | "keychain";
+export type ViewState = "dashboard" | "workspace" | "sessions" | "keychain" | "git";
 
 export function normalizeProjectInput(input: ProjectInput): ProjectInput {
   return {
@@ -28,6 +28,7 @@ export function normalizeServerInput(input: ServerInput): ServerInput {
     credentialName: input.credentialName.trim(),
     credentialSecret:
       input.authKind === "password" ? input.credentialSecret : input.credentialSecret.trim(),
+    isFavorite: input.isFavorite,
     tmuxSession: input.tmuxSession.trim() || "main",
     notes: input.notes.trim(),
     port: Number.isFinite(input.port) ? input.port : 22
@@ -45,6 +46,7 @@ export function mapServerToInput(server: ServerRecord): ServerInput {
     credentialId: server.credentialId,
     credentialName: server.credentialName ?? "",
     credentialSecret: "",
+    isFavorite: server.isFavorite,
     tmuxSession: server.tmuxSession,
     useTmux: server.useTmux,
     notes: server.notes

@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Default capability for the Hermes desktop shell.",
   "windows": ["main"],
-  "permissions": ["core:default", "core:event:default"]
+  "permissions": ["core:default", "core:event:default", "dialog:allow-open"]
 }

@@ -1,8 +1,18 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowUpCircle, FolderPlus, KeyRound, Laptop, Server, Settings2, TerminalSquare } from "lucide-react";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   buildSshTarget,
+  type CliToolUpdateRecord,
+  type ConnectLocalSessionInput,
+  type CreateLocalSshKeyInput,
   defaultProjectInput,
   defaultServerInput,
+  type GitHubAuthSession,
+  type GitHubDeviceFlowRecord,
+  type GitHubRepositoryRecord,
+  type GitRepositoryRecord,
+  type KeychainItemKind,
   projectDisplayLabel,
   serverDisplayLabel,
   type KeychainItemRecord,
@@ -17,17 +27,37 @@ import {
 } from "@hermes/core";
 import {
   closeSession,
+  commitGitRepository,
   connectSession,
+  connectLocalSession,
+  checkoutGitBranch,
+  createGitBranch,
+  createLocalSshKey,
+  createKeychainItem,
   createProject,
   createServer,
   deleteKeychainItem,
   deleteProject,
   deleteServer,
+  disconnectGitHub,
+  getGitHubSession,
+  getDefaultSshDirectory,
+  getCliToolUpdate,
+  getKeychainPublicKey,
+  inspectGitRepository,
+  listGitHubRepositories,
   listKeychainItems,
+  listInstalledCliTools,
   listProjects,
+  listSessionStatuses,
   listServers,
   listTmuxSessions,
+  pollGitHubDeviceFlow,
+  pushGitRepository,
   resizeSession,
+  runCliToolUpdate,
+  searchGitHubRepositories,
+  startGitHubDeviceFlow,
   updateKeychainItemName,
   updateProject,
   updateServer,
@@ -38,6 +68,10 @@ import { AppDialogs } from "./components/AppDialogs";
 import { AppHeader } from "./components/AppHeader";
 import { AppRail } from "./components/AppRail";
 import { AppStage } from "./components/AppStage";
+import type { GitRepositoryView } from "./features/git/GitPage";
+import { LocalSessionPresetEditor } from "./features/sessions/LocalSessionPresetEditor";
+import { SessionLauncher } from "./features/sessions/SessionLauncher";
+import { ToolUpdatesPanel } from "./features/sessions/ToolUpdatesPanel";
 import {
   getErrorMessage,
   type InspectorState,
@@ -50,7 +84,40 @@ import { isTauriRuntime } from "./lib/runtime";
 import { useAppShortcuts } from "./lib/useAppShortcuts";
 import { useBufferedTerminalInput } from "./lib/useBufferedTerminalInput";
 
+const LOCAL_SESSION_PRESETS_KEY = "hermes.localSessionPresets";
+const LOCAL_GIT_REPOSITORIES_KEY = "hermes.localGitRepositories";
+const TOAST_DURATION_MS = 2800;
+
+type LocalSessionPreset = {
+  id: string;
+  name: string;
+  path: string;
+};
+
+type LocalGitRepository = {
+  id: string;
+  name: string;
+  path: string;
+};
+
+type GitRepositoryState = {
+  id: string;
+  snapshot: GitRepositoryRecord | null;
+  error: string | null;
+};
+
+type GitHubRepositoryPane = "owned" | "search";
+
+type ToastTone = "info" | "success" | "error";
+
+type ToastRecord = {
+  id: string;
+  message: string;
+  tone: ToastTone;
+};
+
 export function App() {
+  const [workspaceMode, setWorkspaceMode] = useState<"home" | "terminal">("home");
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [servers, setServers] = useState<ServerRecord[]>([]);
   const [keychainItems, setKeychainItems] = useState<KeychainItemRecord[]>([]);
@@ -68,9 +135,52 @@ export function App() {
   const [tmuxLoading, setTmuxLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [statusText, setStatusText] = useState("Local only. Ready when offline.");
+  const [creatingKeychainItem, setCreatingKeychainItem] = useState(false);
+  const [creatingLocalSshKey, setCreatingLocalSshKey] = useState(false);
   const [editingKeychainItem, setEditingKeychainItem] = useState<KeychainItemRecord | null>(null);
   const [keychainNameDraft, setKeychainNameDraft] = useState("");
+  const [keychainKindDraft, setKeychainKindDraft] = useState<KeychainItemKind>("sshKey");
+  const [keychainSecretDraft, setKeychainSecretDraft] = useState("");
+  const [localSshKeyDirectoryDraft, setLocalSshKeyDirectoryDraft] = useState("");
+  const [localSshKeyFileNameDraft, setLocalSshKeyFileNameDraft] = useState("id_ed25519");
+  const [localSshKeyPassphraseDraft, setLocalSshKeyPassphraseDraft] = useState("");
+  const [copyingPublicKeyId, setCopyingPublicKeyId] = useState<string | null>(null);
+  const [sessionLauncherOpen, setSessionLauncherOpen] = useState(false);
+  const [localSessionPresets, setLocalSessionPresets] = useState<LocalSessionPreset[]>(() =>
+    loadLocalSessionPresets()
+  );
+  const [localGitRepositories, setLocalGitRepositories] = useState<LocalGitRepository[]>(() =>
+    loadLocalGitRepositories()
+  );
+  const [gitRepositoryStates, setGitRepositoryStates] = useState<GitRepositoryState[]>([]);
+  const [selectedGitRepositoryId, setSelectedGitRepositoryId] = useState<string | null>(null);
+  const [gitLoading, setGitLoading] = useState(false);
+  const [gitBusyAction, setGitBusyAction] = useState<string | null>(null);
+  const [gitCommitMessage, setGitCommitMessage] = useState("");
+  const [gitBranchName, setGitBranchName] = useState("");
+  const [gitHubSession, setGitHubSession] = useState<GitHubAuthSession | null>(null);
+  const [gitHubDeviceFlow, setGitHubDeviceFlow] = useState<GitHubDeviceFlowRecord | null>(null);
+  const [gitHubOwnedRepositories, setGitHubOwnedRepositories] = useState<GitHubRepositoryRecord[]>([]);
+  const [gitHubPublicRepositories, setGitHubPublicRepositories] = useState<GitHubRepositoryRecord[]>([]);
+  const [gitHubSearchQuery, setGitHubSearchQuery] = useState("");
+  const [gitHubRepositoryPane, setGitHubRepositoryPane] = useState<GitHubRepositoryPane>("owned");
+  const [gitHubLoading, setGitHubLoading] = useState(false);
+  const [gitHubRepositoryLoading, setGitHubRepositoryLoading] = useState(false);
+  const [gitHubSearchLoading, setGitHubSearchLoading] = useState(false);
+  const [localSessionPresetEditorOpen, setLocalSessionPresetEditorOpen] = useState(false);
+  const [localSessionPresetName, setLocalSessionPresetName] = useState("");
+  const [localSessionPresetPath, setLocalSessionPresetPath] = useState("");
+  const [toolUpdatesOpen, setToolUpdatesOpen] = useState(false);
+  const [toolUpdatesLoading, setToolUpdatesLoading] = useState(false);
+  const [toolUpdates, setToolUpdates] = useState<CliToolUpdateRecord[]>([]);
+  const [toolUpdateBusyId, setToolUpdateBusyId] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<ToastRecord[]>([]);
+  const tabsRef = useRef<TerminalTab[]>([]);
+  const toolUpdatesRequestIdRef = useRef(0);
+  const toastTimeoutsRef = useRef<Map<string, number>>(new Map());
+  const pendingTerminalStatesRef = useRef<
+    Map<string, Pick<TerminalStatusEvent, "status" | "message">>
+  >(new Map());
 
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
@@ -79,6 +189,14 @@ export function App() {
   const selectedServer = useMemo(
     () => servers.find((server) => server.id === selectedServerId) ?? null,
     [servers, selectedServerId]
+  );
+  const activeTab = useMemo(
+    () => tabs.find((tab) => tab.id === activeTabId) ?? null,
+    [activeTabId, tabs]
+  );
+  const activeTabServer = useMemo(
+    () => servers.find((server) => server.id === activeTab?.serverId) ?? null,
+    [activeTab?.serverId, servers]
   );
 
   const serverCountByProject = useMemo(() => {
@@ -118,6 +236,32 @@ export function App() {
     });
   }, [deferredSearch, projects, servers]);
 
+  const favoriteServers = useMemo(() => {
+    const query = deferredSearch.trim().toLowerCase();
+
+    return servers.filter((server) => {
+      if (!server.isFavorite) {
+        return false;
+      }
+
+      if (!query) {
+        return true;
+      }
+
+      const project = projects.find((candidate) => candidate.id === server.projectId);
+      return [
+        server.name,
+        server.hostname,
+        server.username,
+        server.notes,
+        server.tmuxSession,
+        server.credentialName ?? "",
+        project?.name ?? "",
+        project?.description ?? ""
+      ].some((value) => value.toLowerCase().includes(query));
+    });
+  }, [deferredSearch, projects, servers]);
+
   const filteredKeychainItems = useMemo(() => {
     const query = deferredSearch.trim().toLowerCase();
     if (!query) {
@@ -128,6 +272,40 @@ export function App() {
       [item.name, item.kind].some((value) => value.toLowerCase().includes(query))
     );
   }, [deferredSearch, keychainItems]);
+
+  const gitRepositories = useMemo<GitRepositoryView[]>(() => {
+    const statesById = new Map(
+      gitRepositoryStates.map((repository) => [repository.id, repository] as const)
+    );
+
+    return localGitRepositories.map((repository) => ({
+      ...repository,
+      snapshot: statesById.get(repository.id)?.snapshot ?? null,
+      error: statesById.get(repository.id)?.error ?? null
+    }));
+  }, [gitRepositoryStates, localGitRepositories]);
+
+  const filteredGitRepositories = useMemo<GitRepositoryView[]>(() => {
+    const query = deferredSearch.trim().toLowerCase();
+    if (!query) {
+      return gitRepositories;
+    }
+
+    return gitRepositories.filter((repository) => {
+      const snapshot = repository.snapshot;
+      const haystack = [
+        repository.name,
+        repository.path,
+        snapshot?.branch ?? "",
+        snapshot?.upstream ?? "",
+        snapshot?.remoteName ?? "",
+        ...(snapshot?.changes.map((change) => change.path) ?? []),
+        ...(snapshot?.recentCommits.map((commit) => commit.summary) ?? [])
+      ];
+
+      return haystack.some((value) => value.toLowerCase().includes(query));
+    });
+  }, [deferredSearch, gitRepositories]);
 
   const projectServers = useMemo(() => {
     const query = deferredSearch.trim().toLowerCase();
@@ -149,6 +327,29 @@ export function App() {
         ].some((value) => value.toLowerCase().includes(query));
       });
   }, [deferredSearch, selectedProjectId, servers]);
+
+  const workspaceTabs = useMemo(() => {
+    if (!selectedProjectId) {
+      return [];
+    }
+
+    const serverIds = new Set(
+      servers
+        .filter((server) => server.projectId === selectedProjectId)
+        .map((server) => server.id)
+    );
+
+    return tabs.filter((tab) => serverIds.has(tab.serverId));
+  }, [selectedProjectId, servers, tabs]);
+
+  const selectedGitRepository = useMemo(
+    () =>
+      gitRepositories.find((repository) => repository.id === selectedGitRepositoryId) ??
+      filteredGitRepositories[0] ??
+      gitRepositories[0] ??
+      null,
+    [filteredGitRepositories, gitRepositories, selectedGitRepositoryId]
+  );
 
   useEffect(() => {
     void refreshWorkspace();
@@ -183,6 +384,170 @@ export function App() {
   }, [selectedProjectId, view]);
 
   useEffect(() => {
+    persistLocalSessionPresets(localSessionPresets);
+  }, [localSessionPresets]);
+
+  useEffect(() => {
+    persistLocalGitRepositories(localGitRepositories);
+  }, [localGitRepositories]);
+
+  useEffect(() => {
+    if (selectedGitRepositoryId && localGitRepositories.some((repo) => repo.id === selectedGitRepositoryId)) {
+      return;
+    }
+
+    setSelectedGitRepositoryId(localGitRepositories[0]?.id ?? null);
+  }, [localGitRepositories, selectedGitRepositoryId]);
+
+  useEffect(() => {
+    setGitCommitMessage("");
+    setGitBranchName("");
+  }, [selectedGitRepositoryId]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      setGitRepositoryStates([]);
+      setGitLoading(false);
+      return;
+    }
+
+    if (localGitRepositories.length === 0) {
+      setGitRepositoryStates([]);
+      setGitLoading(false);
+      return;
+    }
+
+    void refreshGitRepositories();
+  }, [localGitRepositories]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      setGitHubSession(null);
+      return;
+    }
+
+    void loadGitHubSessionState();
+  }, []);
+
+  useEffect(() => {
+    if (view !== "git" || !gitHubSession) {
+      return;
+    }
+
+    void loadGitHubOwnedRepositories();
+  }, [gitHubSession, view]);
+
+  useEffect(() => {
+    if (view !== "git") {
+      return;
+    }
+
+    const query = gitHubSearchQuery.trim();
+    if (!query) {
+      setGitHubPublicRepositories([]);
+      setGitHubSearchLoading(false);
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void loadGitHubSearchRepositories(query);
+    }, 240);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [gitHubSearchQuery, view]);
+
+  useEffect(() => {
+    if (!gitHubDeviceFlow) {
+      return;
+    }
+
+    const intervalMs = Math.max(gitHubDeviceFlow.interval, 5) * 1000;
+    let cancelled = false;
+    const runPoll = async () => {
+      try {
+        const session = await pollGitHubDeviceFlow();
+        if (cancelled || !session) {
+          return;
+        }
+
+        setGitHubSession(session);
+        setGitHubDeviceFlow(null);
+        pushToast(`Connected GitHub as ${session.login}.`, "success");
+        await loadGitHubOwnedRepositories(session);
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+
+        setGitHubDeviceFlow(null);
+        pushToast(getErrorMessage(error), "error");
+      }
+    };
+
+    const intervalId = window.setInterval(() => {
+      void runPoll();
+    }, intervalMs);
+
+    void runPoll();
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [gitHubDeviceFlow]);
+
+  useEffect(() => {
+    tabsRef.current = tabs;
+  }, [tabs]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      const activeTabs = tabsRef.current;
+      if (activeTabs.length === 0) {
+        return;
+      }
+
+      void listSessionStatuses()
+        .then((snapshots) => {
+          if (snapshots.length === 0) {
+            return;
+          }
+
+          const snapshotById = new Map(
+            snapshots.map((snapshot) => [snapshot.sessionId, snapshot.status] as const)
+          );
+
+          setTabs((current) => {
+            let changed = false;
+            const nextTabs = current.map((tab) => {
+              const snapshotStatus = snapshotById.get(tab.id);
+              if (!snapshotStatus) {
+                return tab;
+              }
+
+              const nextStatus = mergeTerminalStatus(tab.status, snapshotStatus);
+              if (nextStatus === tab.status) {
+                return tab;
+              }
+
+              changed = true;
+              return { ...tab, status: nextStatus };
+            });
+
+            return changed ? nextTabs : current;
+          });
+        })
+        .catch(() => undefined);
+    }, 750);
+
+    return () => window.clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
     if (view !== "workspace" || !selectedServerId || !isTauriRuntime()) {
       setTmuxSessions([]);
       setTmuxLoading(false);
@@ -191,6 +556,40 @@ export function App() {
 
     void refreshTmuxSessions(selectedServerId);
   }, [selectedServerId, view]);
+
+  useEffect(() => {
+    return () => {
+      toastTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+      toastTimeoutsRef.current.clear();
+    };
+  }, []);
+
+  const dismissToast = (id: string) => {
+    const timeoutId = toastTimeoutsRef.current.get(id);
+    if (typeof timeoutId === "number") {
+      window.clearTimeout(timeoutId);
+      toastTimeoutsRef.current.delete(id);
+    }
+
+    setToasts((current) => current.filter((toast) => toast.id !== id));
+  };
+
+  const pushToast = (message: string, tone: ToastTone = "info") => {
+    const nextMessage = message.trim();
+    if (!nextMessage) {
+      return;
+    }
+
+    const id = crypto.randomUUID();
+    setToasts((current) => [...current.slice(-3), { id, message: nextMessage, tone }]);
+
+    const timeoutId = window.setTimeout(() => {
+      toastTimeoutsRef.current.delete(id);
+      setToasts((current) => current.filter((toast) => toast.id !== id));
+    }, TOAST_DURATION_MS);
+
+    toastTimeoutsRef.current.set(id, timeoutId);
+  };
 
   const refreshWorkspace = async () => {
     setLoading(true);
@@ -211,7 +610,7 @@ export function App() {
       setServers(nextServers);
       setKeychainItems(nextKeychainItems);
     } catch (error) {
-      setStatusText(getErrorMessage(error));
+      pushToast(getErrorMessage(error), "error");
     } finally {
       setLoading(false);
     }
@@ -293,19 +692,20 @@ export function App() {
         const created = await createProject(normalizeProjectInput(projectDraft));
         setProjects((current) => [created, ...current]);
         setSelectedProjectId(created.id);
+        setWorkspaceMode("home");
         setView("workspace");
-        setStatusText(`Created workspace ${projectDisplayLabel(created)}.`);
+        pushToast(`Created workspace ${projectDisplayLabel(created)}.`, "success");
       } else if (selectedProjectId) {
         const updated = await updateProject(selectedProjectId, normalizeProjectInput(projectDraft));
         setProjects((current) =>
           current.map((project) => (project.id === updated.id ? updated : project))
         );
-        setStatusText(`Updated ${projectDisplayLabel(updated)}.`);
+        pushToast(`Updated ${projectDisplayLabel(updated)}.`, "success");
       }
 
       setInspector({ kind: "hidden" });
     } catch (error) {
-      setStatusText(getErrorMessage(error));
+      pushToast(getErrorMessage(error), "error");
     } finally {
       setSaving(false);
     }
@@ -323,8 +723,9 @@ export function App() {
         setServers((current) => [created, ...current]);
         setSelectedProjectId(created.projectId);
         setSelectedServerId(created.id);
+        setWorkspaceMode("home");
         setView("workspace");
-        setStatusText(`Added server ${serverDisplayLabel(created)}.`);
+        pushToast(`Added server ${serverDisplayLabel(created)}.`, "success");
       } else if (selectedServerId) {
         const updated = await updateServer(selectedServerId, normalizeServerInput(serverDraft));
         setServers((current) =>
@@ -332,13 +733,13 @@ export function App() {
         );
         setSelectedProjectId(updated.projectId);
         setSelectedServerId(updated.id);
-        setStatusText(`Updated server ${serverDisplayLabel(updated)}.`);
+        pushToast(`Updated server ${serverDisplayLabel(updated)}.`, "success");
       }
 
       await refreshKeychain();
       setInspector({ kind: "hidden" });
     } catch (error) {
-      setStatusText(getErrorMessage(error));
+      pushToast(getErrorMessage(error), "error");
     } finally {
       setSaving(false);
     }
@@ -356,9 +757,9 @@ export function App() {
       await refreshKeychain();
       setInspector({ kind: "hidden" });
       setView("dashboard");
-      setStatusText("Deleted workspace and its servers.");
+      pushToast("Deleted workspace and its servers.", "success");
     } catch (error) {
-      setStatusText(getErrorMessage(error));
+      pushToast(getErrorMessage(error), "error");
     }
   };
 
@@ -372,14 +773,15 @@ export function App() {
       setServers((current) => current.filter((server) => server.id !== selectedServerId));
       await refreshKeychain();
       setInspector({ kind: "hidden" });
-      setStatusText("Deleted server.");
+      pushToast("Deleted server.", "success");
     } catch (error) {
-      setStatusText(getErrorMessage(error));
+      pushToast(getErrorMessage(error), "error");
     }
   };
 
   const handleOpenProject = (projectId: string) => {
     setSelectedProjectId(projectId);
+    setWorkspaceMode("home");
     setView("workspace");
     const firstServer = servers.find((server) => server.projectId === projectId);
     setSelectedServerId(firstServer?.id ?? null);
@@ -397,13 +799,633 @@ export function App() {
 
   const handleConnect = async (serverId: string, tmuxSession?: string) => {
     try {
+      const server = servers.find((candidate) => candidate.id === serverId);
+      if (server) {
+        setSelectedProjectId(server.projectId);
+        setSelectedServerId(server.id);
+      }
+      setWorkspaceMode("terminal");
+      setView("sessions");
+      setSessionLauncherOpen(false);
+
       const tab = await connectSession({ serverId, tmuxSession });
-      setTabs((current) => [...current, tab]);
+      const pendingState = pendingTerminalStatesRef.current.get(tab.id);
+      if (pendingState) {
+        pendingTerminalStatesRef.current.delete(tab.id);
+      }
+      setTabs((current) => [
+        ...current,
+        {
+          ...tab,
+          status: pendingState?.status ?? tab.status
+        }
+      ]);
       setActiveTabId(tab.id);
-      setStatusText(`Opening ${tab.title}...`);
     } catch (error) {
-      setStatusText(getErrorMessage(error));
+      pushToast(getErrorMessage(error), "error");
     }
+  };
+
+  const handleConnectLocal = async (input?: ConnectLocalSessionInput) => {
+    try {
+      setWorkspaceMode("terminal");
+      setView("sessions");
+      setSessionLauncherOpen(false);
+
+      const tab = await connectLocalSession(input);
+      const pendingState = pendingTerminalStatesRef.current.get(tab.id);
+      if (pendingState) {
+        pendingTerminalStatesRef.current.delete(tab.id);
+      }
+      setTabs((current) => [
+        ...current,
+        {
+          ...tab,
+          status: pendingState?.status ?? tab.status
+        }
+      ]);
+      setActiveTabId(tab.id);
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
+    }
+  };
+
+  const openLocalSessionPresetEditor = () => {
+    setLocalSessionPresetName("");
+    setLocalSessionPresetPath("");
+    setLocalSessionPresetEditorOpen(true);
+  };
+
+  const openCreateKeychainItem = () => {
+    setCreatingLocalSshKey(false);
+    setEditingKeychainItem(null);
+    setCreatingKeychainItem(true);
+    setKeychainNameDraft("");
+    setKeychainKindDraft("sshKey");
+    setKeychainSecretDraft("");
+  };
+
+  const openCreateLocalSshKey = async () => {
+    setCreatingKeychainItem(false);
+    setEditingKeychainItem(null);
+    setCreatingLocalSshKey(true);
+    setKeychainNameDraft("");
+    setLocalSshKeyFileNameDraft("id_ed25519");
+    setLocalSshKeyPassphraseDraft("");
+
+    if (!isTauriRuntime()) {
+      setLocalSshKeyDirectoryDraft("");
+      return;
+    }
+
+    try {
+      const defaultPath = await getDefaultSshDirectory();
+      setLocalSshKeyDirectoryDraft(defaultPath ?? "");
+    } catch {
+      setLocalSshKeyDirectoryDraft("");
+    }
+  };
+
+  const loadToolUpdates = async () => {
+    if (!isTauriRuntime()) {
+      pushToast("Agent updates are only available in the desktop app.", "info");
+      return;
+    }
+
+    const requestId = toolUpdatesRequestIdRef.current + 1;
+    toolUpdatesRequestIdRef.current = requestId;
+    setToolUpdatesLoading(true);
+    try {
+      const installedTools = await listInstalledCliTools();
+      if (toolUpdatesRequestIdRef.current !== requestId) {
+        return;
+      }
+
+      setToolUpdates(installedTools);
+
+      const detailTasks = installedTools.map((tool) =>
+        getCliToolUpdate(tool.id)
+          .then((updated) => {
+            if (toolUpdatesRequestIdRef.current !== requestId) {
+              return;
+            }
+
+            setToolUpdates((current) =>
+              current.map((candidate) => (candidate.id === updated.id ? updated : candidate))
+            );
+          })
+          .catch(() => undefined)
+      );
+
+      await Promise.allSettled(detailTasks);
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
+    } finally {
+      if (toolUpdatesRequestIdRef.current === requestId) {
+        setToolUpdatesLoading(false);
+      }
+    }
+  };
+
+  const openToolUpdates = () => {
+    setToolUpdatesOpen(true);
+    void loadToolUpdates();
+  };
+
+  const handleBrowseLocalSessionPresetPath = async () => {
+    if (!isTauriRuntime()) {
+      pushToast("Folder picking is only available in the desktop app.", "info");
+      return;
+    }
+
+    try {
+      const selection = await open({
+        directory: true,
+        multiple: false,
+        title: "Choose local session directory"
+      });
+
+      if (typeof selection === "string") {
+        setLocalSessionPresetPath(selection);
+      }
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
+    }
+  };
+
+  const handleBrowseKeychainSecret = async () => {
+    if (!isTauriRuntime()) {
+      pushToast("SSH key browsing is only available in the desktop app.", "info");
+      return;
+    }
+
+    if (keychainKindDraft !== "sshKey") {
+      return;
+    }
+
+    try {
+      const defaultPath = await getDefaultSshDirectory();
+      const selection = await open({
+        defaultPath: defaultPath ?? undefined,
+        directory: false,
+        multiple: false,
+        title: "Choose SSH private key"
+      });
+
+      if (typeof selection === "string") {
+        setKeychainSecretDraft(selection);
+      }
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
+    }
+  };
+
+  const handleBrowseLocalSshKeyDirectory = async () => {
+    if (!isTauriRuntime()) {
+      pushToast("SSH key browsing is only available in the desktop app.", "info");
+      return;
+    }
+
+    try {
+      const defaultPath = await getDefaultSshDirectory();
+      const selection = await open({
+        defaultPath: defaultPath ?? undefined,
+        directory: true,
+        multiple: false,
+        title: "Choose SSH key directory"
+      });
+
+      if (typeof selection === "string") {
+        setLocalSshKeyDirectoryDraft(selection);
+      }
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
+    }
+  };
+
+  const handleSaveLocalSessionPreset = () => {
+    const name = localSessionPresetName.trim();
+    const path = localSessionPresetPath.trim();
+    if (!name || !path) {
+      pushToast("Saved path buttons need both a label and a directory.", "error");
+      return;
+    }
+
+    setLocalSessionPresets((current) => [
+      {
+        id: crypto.randomUUID(),
+        name,
+        path
+      },
+      ...current
+    ]);
+    setLocalSessionPresetEditorOpen(false);
+    pushToast(`Saved local path ${name}.`, "success");
+  };
+
+  const handleLaunchLocalPreset = async (presetId: string) => {
+    const preset = localSessionPresets.find((candidate) => candidate.id === presetId);
+    if (!preset) {
+      return;
+    }
+
+    await handleConnectLocal({
+      cwd: preset.path,
+      label: preset.name
+    });
+  };
+
+  const handleRemoveLocalPreset = (presetId: string) => {
+    setLocalSessionPresets((current) => current.filter((preset) => preset.id !== presetId));
+  };
+
+  const syncGitRepositorySnapshot = (repositoryId: string, snapshot: GitRepositoryRecord) => {
+    setGitRepositoryStates((current) => {
+      const next = current.filter((repository) => repository.id !== repositoryId);
+      return [...next, { id: repositoryId, snapshot, error: null }];
+    });
+
+    setLocalGitRepositories((current) =>
+      current.map((repository) =>
+        repository.id === repositoryId
+          ? {
+              ...repository,
+              name: snapshot.name,
+              path: snapshot.rootPath
+            }
+          : repository
+      )
+    );
+  };
+
+  const refreshGitRepositories = async () => {
+    if (!isTauriRuntime()) {
+      pushToast("Git controls are only available in the desktop app.", "info");
+      return;
+    }
+
+    if (localGitRepositories.length === 0) {
+      setGitRepositoryStates([]);
+      return;
+    }
+
+    setGitLoading(true);
+    try {
+      const results = await Promise.all(
+        localGitRepositories.map(async (repository) => {
+          try {
+            const snapshot = await inspectGitRepository(repository.path);
+            return {
+              id: repository.id,
+              error: null,
+              snapshot
+            };
+          } catch (error) {
+            return {
+              id: repository.id,
+              error: getErrorMessage(error),
+              snapshot: null
+            };
+          }
+        })
+      );
+
+      setGitRepositoryStates(results);
+      setLocalGitRepositories((current) => {
+        let changed = false;
+        const next = current.map((repository) => {
+          const result = results.find((candidate) => candidate.id === repository.id);
+          if (!result?.snapshot) {
+            return repository;
+          }
+
+          if (
+            repository.name === result.snapshot.name &&
+            repository.path === result.snapshot.rootPath
+          ) {
+            return repository;
+          }
+
+          changed = true;
+          return {
+            ...repository,
+            name: result.snapshot.name,
+            path: result.snapshot.rootPath
+          };
+        });
+
+        return changed ? next : current;
+      });
+    } finally {
+      setGitLoading(false);
+    }
+  };
+
+  const loadGitHubSessionState = async () => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+
+    try {
+      const session = await getGitHubSession().catch(() => null);
+      setGitHubSession(session);
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
+    }
+  };
+
+  const loadGitHubOwnedRepositories = async (sessionOverride?: GitHubAuthSession | null) => {
+    const activeSession = sessionOverride ?? gitHubSession;
+    if (!isTauriRuntime() || !activeSession) {
+      setGitHubOwnedRepositories([]);
+      return;
+    }
+
+    setGitHubRepositoryLoading(true);
+    try {
+      const repositories = await listGitHubRepositories();
+      setGitHubOwnedRepositories(repositories);
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
+    } finally {
+      setGitHubRepositoryLoading(false);
+    }
+  };
+
+  const loadGitHubSearchRepositories = async (query: string) => {
+    setGitHubSearchLoading(true);
+    try {
+      const repositories = await searchGitHubRepositories(query);
+      setGitHubPublicRepositories(repositories);
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
+    } finally {
+      setGitHubSearchLoading(false);
+    }
+  };
+
+  const handleStartGitHubSignIn = async () => {
+    if (!isTauriRuntime()) {
+      pushToast("GitHub auth is only available in the desktop app.", "info");
+      return;
+    }
+
+    setGitHubLoading(true);
+    try {
+      const flow = await startGitHubDeviceFlow();
+      setGitHubDeviceFlow(flow);
+      pushToast(`Enter ${flow.userCode} in the GitHub window to finish sign-in.`, "info");
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
+    } finally {
+      setGitHubLoading(false);
+    }
+  };
+
+  const handleDisconnectGitHub = async () => {
+    setGitHubLoading(true);
+    try {
+      await disconnectGitHub();
+      setGitHubSession(null);
+      setGitHubOwnedRepositories([]);
+      setGitHubDeviceFlow(null);
+      pushToast("Disconnected GitHub.", "success");
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
+    } finally {
+      setGitHubLoading(false);
+    }
+  };
+
+  const handleCancelGitHubSignIn = () => {
+    setGitHubDeviceFlow(null);
+  };
+
+  const handleCopyGitHubCloneUrl = async (cloneUrl: string) => {
+    try {
+      await navigator.clipboard.writeText(cloneUrl);
+      pushToast("Clone URL copied.", "success");
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
+    }
+  };
+
+  const handleAddGitRepository = async () => {
+    if (!isTauriRuntime()) {
+      pushToast("Git controls are only available in the desktop app.", "info");
+      return;
+    }
+
+    setGitBusyAction("add");
+    try {
+      const selection = await open({
+        directory: true,
+        multiple: false,
+        title: "Choose Git repository"
+      });
+
+      if (typeof selection !== "string") {
+        return;
+      }
+
+      const snapshot = await inspectGitRepository(selection);
+      const existingRepository = localGitRepositories.find(
+        (repository) => repository.path === snapshot.rootPath
+      );
+
+      if (existingRepository) {
+        syncGitRepositorySnapshot(existingRepository.id, snapshot);
+        setSelectedGitRepositoryId(existingRepository.id);
+        setView("git");
+        pushToast(`${snapshot.name} is already pinned in Git.`, "info");
+        return;
+      }
+
+      const repositoryId = crypto.randomUUID();
+      setLocalGitRepositories((current) => [
+        {
+          id: repositoryId,
+          name: snapshot.name,
+          path: snapshot.rootPath
+        },
+        ...current
+      ]);
+      setGitRepositoryStates((current) => [
+        ...current.filter((repository) => repository.id !== repositoryId),
+        { id: repositoryId, snapshot, error: null }
+      ]);
+      setSelectedGitRepositoryId(repositoryId);
+      setView("git");
+      pushToast(`Pinned ${snapshot.name} in Git.`, "success");
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
+    } finally {
+      setGitBusyAction(null);
+    }
+  };
+
+  const handleRemoveGitRepository = (repositoryId: string) => {
+    const repository = gitRepositories.find((candidate) => candidate.id === repositoryId);
+    setLocalGitRepositories((current) => current.filter((candidate) => candidate.id !== repositoryId));
+    setGitRepositoryStates((current) => current.filter((candidate) => candidate.id !== repositoryId));
+    if (selectedGitRepositoryId === repositoryId) {
+      setSelectedGitRepositoryId(null);
+    }
+    if (repository) {
+      pushToast(`Removed ${repository.name} from Git.`, "success");
+    }
+  };
+
+  const handleOpenGitRepositoryShell = async (repositoryId: string) => {
+    const repository = gitRepositories.find((candidate) => candidate.id === repositoryId);
+    if (!repository) {
+      return;
+    }
+
+    setGitBusyAction(`shell:${repositoryId}`);
+    try {
+      await handleConnectLocal({
+        cwd: repository.snapshot?.rootPath ?? repository.path,
+        label: repository.snapshot?.name ?? repository.name
+      });
+    } finally {
+      setGitBusyAction(null);
+    }
+  };
+
+  const handleCopyGitReviewDraft = async (repositoryId: string) => {
+    const repository = gitRepositories.find((candidate) => candidate.id === repositoryId);
+    if (!repository?.snapshot?.review) {
+      pushToast("Create or switch to a review branch before copying a local PR draft.", "info");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(buildGitReviewDraft(repository.snapshot));
+      pushToast("Local review draft copied.", "success");
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
+    }
+  };
+
+  const handleCommitGitRepository = async (repositoryId: string) => {
+    const repository = gitRepositories.find((candidate) => candidate.id === repositoryId);
+    if (!repository) {
+      return;
+    }
+
+    setGitBusyAction(`commit:${repositoryId}`);
+    try {
+      const snapshot = await commitGitRepository(
+        repository.snapshot?.rootPath ?? repository.path,
+        gitCommitMessage
+      );
+      syncGitRepositorySnapshot(repositoryId, snapshot);
+      setGitCommitMessage("");
+      pushToast(`Committed ${snapshot.name}.`, "success");
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
+    } finally {
+      setGitBusyAction(null);
+    }
+  };
+
+  const handleCreateGitBranch = async (repositoryId: string) => {
+    const repository = gitRepositories.find((candidate) => candidate.id === repositoryId);
+    if (!repository) {
+      return;
+    }
+
+    setGitBusyAction(`branch:${repositoryId}`);
+    try {
+      const snapshot = await createGitBranch(
+        repository.snapshot?.rootPath ?? repository.path,
+        gitBranchName
+      );
+      syncGitRepositorySnapshot(repositoryId, snapshot);
+      setGitBranchName("");
+      pushToast(`Checked out ${snapshot.branch}.`, "success");
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
+    } finally {
+      setGitBusyAction(null);
+    }
+  };
+
+  const handleCheckoutGitBranch = async (repositoryId: string, branchName: string) => {
+    const repository = gitRepositories.find((candidate) => candidate.id === repositoryId);
+    if (!repository) {
+      return;
+    }
+
+    setGitBusyAction(`checkout:${repositoryId}:${branchName}`);
+    try {
+      const snapshot = await checkoutGitBranch(
+        repository.snapshot?.rootPath ?? repository.path,
+        branchName
+      );
+      syncGitRepositorySnapshot(repositoryId, snapshot);
+      pushToast(`Checked out ${snapshot.branch}.`, "success");
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
+    } finally {
+      setGitBusyAction(null);
+    }
+  };
+
+  const handlePushGitRepository = async (repositoryId: string) => {
+    const repository = gitRepositories.find((candidate) => candidate.id === repositoryId);
+    if (!repository) {
+      return;
+    }
+
+    setGitBusyAction(`push:${repositoryId}`);
+    try {
+      const snapshot = await pushGitRepository(repository.snapshot?.rootPath ?? repository.path);
+      syncGitRepositorySnapshot(repositoryId, snapshot);
+      pushToast(`Published ${snapshot.branch}.`, "success");
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
+    } finally {
+      setGitBusyAction(null);
+    }
+  };
+
+  const handleRunToolUpdate = async (toolId: string) => {
+    setToolUpdateBusyId(toolId);
+    try {
+      const updated = await runCliToolUpdate(toolId);
+      setToolUpdates((current) =>
+        current.map((tool) => (tool.id === updated.id ? updated : tool))
+      );
+      pushToast(
+        updated.state === "updateAvailable"
+          ? `${updated.name} still has an update pending.`
+          : `${updated.name} checked successfully.`,
+        updated.state === "updateAvailable" ? "info" : "success"
+      );
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
+    } finally {
+      setToolUpdateBusyId(null);
+    }
+  };
+
+  const handleOpenTerminalSession = (tabId: string) => {
+    const tab = tabs.find((candidate) => candidate.id === tabId);
+    if (!tab) {
+      return;
+    }
+
+    const server = servers.find((candidate) => candidate.id === tab.serverId);
+    if (server) {
+      setSelectedProjectId(server.projectId);
+      setSelectedServerId(server.id);
+    }
+
+    setActiveTabId(tabId);
+    setWorkspaceMode("terminal");
+    setView("sessions");
   };
 
   const handleDeleteKeychainItem = async (id: string) => {
@@ -411,33 +1433,115 @@ export function App() {
       await deleteKeychainItem(id);
       setEditingKeychainItem(null);
       await refreshWorkspace();
-      setStatusText("Deleted saved credential.");
+      pushToast("Deleted saved credential.", "success");
     } catch (error) {
-      setStatusText(getErrorMessage(error));
+      pushToast(getErrorMessage(error), "error");
+    }
+  };
+
+  const handleCopyKeychainPublicKey = async (id: string) => {
+    setCopyingPublicKeyId(id);
+    try {
+      const publicKey = await getKeychainPublicKey(id);
+      await navigator.clipboard.writeText(publicKey);
+      pushToast("Public key copied.", "success");
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
+    } finally {
+      setCopyingPublicKeyId(null);
     }
   };
 
   const handleSaveKeychainItem = async () => {
-    if (!editingKeychainItem) {
-      return;
-    }
-
     setSaving(true);
     try {
-      await updateKeychainItemName(editingKeychainItem.id, keychainNameDraft.trim());
-      setEditingKeychainItem(null);
+      if (creatingKeychainItem) {
+        await createKeychainItem({
+          kind: keychainKindDraft,
+          name: keychainNameDraft.trim(),
+          secret: keychainSecretDraft
+        });
+        setCreatingKeychainItem(false);
+        pushToast("Added saved credential.", "success");
+      } else if (editingKeychainItem) {
+        await updateKeychainItemName(editingKeychainItem.id, keychainNameDraft.trim());
+        setEditingKeychainItem(null);
+        pushToast("Updated credential name.", "success");
+      } else {
+        return;
+      }
+
       await refreshWorkspace();
-      setStatusText("Updated credential name.");
     } catch (error) {
-      setStatusText(getErrorMessage(error));
+      pushToast(getErrorMessage(error), "error");
     } finally {
       setSaving(false);
     }
   };
 
+  const handleCreateLocalSshKey = async () => {
+    const input: CreateLocalSshKeyInput = {
+      directory: localSshKeyDirectoryDraft.trim(),
+      fileName: localSshKeyFileNameDraft.trim(),
+      name: keychainNameDraft.trim(),
+      passphrase: localSshKeyPassphraseDraft
+    };
+
+    setSaving(true);
+    try {
+      await createLocalSshKey(input);
+      setCreatingLocalSshKey(false);
+      pushToast("Created SSH key and saved credential.", "success");
+      await refreshWorkspace();
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleServerDraftChange = <K extends keyof ServerInput>(field: K, value: ServerInput[K]) => {
+    setServerDraft((current) => {
+      if (field !== "authKind") {
+        return {
+          ...current,
+          [field]: value
+        };
+      }
+
+      const nextAuthKind = value as ServerInput["authKind"];
+
+      if (nextAuthKind === "default") {
+        return {
+          ...current,
+          authKind: nextAuthKind,
+          credentialId: null,
+          credentialName: "",
+          credentialSecret: ""
+        };
+      }
+
+      if (current.authKind === nextAuthKind) {
+        return {
+          ...current,
+          authKind: nextAuthKind
+        };
+      }
+
+      return {
+        ...current,
+        authKind: nextAuthKind,
+        credentialId: null,
+        credentialName: "",
+        credentialSecret: ""
+      };
+    });
+  };
+
   const handleCloseTab = async (tabId: string) => {
     const nextTabs = tabs.filter((tab) => tab.id !== tabId);
     clearTerminalInput(tabId);
+    pendingTerminalStatesRef.current.delete(tabId);
 
     try {
       await closeSession(tabId);
@@ -451,7 +1555,7 @@ export function App() {
     }
 
     if (nextTabs.length === 0) {
-      setStatusText("Closed terminal.");
+      setWorkspaceMode("home");
     }
   };
 
@@ -466,35 +1570,69 @@ export function App() {
   };
 
   const handleStatus = (event: TerminalStatusEvent) => {
-    setTabs((current) =>
-      current.map((tab) =>
-        tab.id === event.sessionId ? { ...tab, status: event.status } : tab
-      )
-    );
-    setStatusText(event.message);
+    const hasTab = tabsRef.current.some((tab) => tab.id === event.sessionId);
+    if (hasTab) {
+      setTabs((current) =>
+        current.map((tab) =>
+          tab.id === event.sessionId
+            ? { ...tab, status: mergeTerminalStatus(tab.status, event.status) }
+            : tab
+        )
+      );
+    } else {
+      const currentPending = pendingTerminalStatesRef.current.get(event.sessionId);
+      pendingTerminalStatesRef.current.set(event.sessionId, {
+        message: event.message,
+        status: mergeTerminalStatus(currentPending?.status, event.status)
+      });
+    }
   };
 
   const handleExit = (event: TerminalExitEvent) => {
-    setTabs((current) =>
-      current.map((tab) =>
-        tab.id === event.sessionId ? { ...tab, status: "closed" } : tab
-      )
-    );
-    setStatusText(event.reason + (event.exitCode !== null ? ` (exit ${event.exitCode})` : ""));
+    const hasTab = tabsRef.current.some((tab) => tab.id === event.sessionId);
+    if (hasTab) {
+      setTabs((current) =>
+        current.map((tab) =>
+          tab.id === event.sessionId ? { ...tab, status: "closed" } : tab
+        )
+      );
+    } else {
+      pendingTerminalStatesRef.current.set(event.sessionId, {
+        message:
+          event.reason + (event.exitCode !== null ? ` (exit ${event.exitCode})` : ""),
+        status: "closed"
+      });
+    }
   };
 
   const headerTitle =
     view === "workspace" && selectedProject
       ? projectDisplayLabel(selectedProject)
+      : view === "sessions"
+        ? "Sessions"
+      : view === "git"
+        ? selectedGitRepository?.snapshot?.name ?? selectedGitRepository?.name ?? "Git"
       : view === "keychain"
         ? "Keychain"
         : "Dashboard";
 
   const headerSubtitle =
-    view === "workspace" && selectedServer
+    view === "sessions" && activeTabServer
+      ? `${tabs.length} live terminal${tabs.length === 1 ? "" : "s"} / ${buildSshTarget(activeTabServer)} / port ${activeTabServer.port}`
+      : view === "sessions"
+        ? `${tabs.length} active terminal${tabs.length === 1 ? "" : "s"}`
+      : view === "workspace" && workspaceMode === "terminal" && selectedServer
       ? `${buildSshTarget(selectedServer)} / port ${selectedServer.port}${selectedServer.useTmux ? ` / tmux ${selectedServer.tmuxSession}` : ""}`
       : view === "workspace"
-        ? "Connections and tmux sessions"
+        ? "Servers, live sessions, and tmux reconnects"
+        : view === "git"
+          ? selectedGitRepository?.snapshot
+            ? `${filteredGitRepositories.length} repo${filteredGitRepositories.length === 1 ? "" : "s"} / ${selectedGitRepository.snapshot.branch} / ${selectedGitRepository.snapshot.changes.length} pending file${selectedGitRepository.snapshot.changes.length === 1 ? "" : "s"}`
+            : filteredGitRepositories.length === 0
+              ? gitHubSession
+                ? `GitHub connected as ${gitHubSession.login} / ${gitHubOwnedRepositories.length} remote repo${gitHubOwnedRepositories.length === 1 ? "" : "s"}`
+                : "Connect GitHub, browse public repos, and pin local checkouts."
+              : `${filteredGitRepositories.length} repo${filteredGitRepositories.length === 1 ? "" : "s"} pinned locally.`
         : view === "keychain"
           ? `${filteredKeychainItems.length} saved credential${filteredKeychainItems.length === 1 ? "" : "s"}`
           : loading
@@ -502,7 +1640,7 @@ export function App() {
             : `${filteredProjects.length} workspace${filteredProjects.length === 1 ? "" : "s"} ready locally.`;
 
   const { clearTerminalInput, queueTerminalInput } = useBufferedTerminalInput({
-    onError: (error) => setStatusText(getErrorMessage(error)),
+    onError: (error) => pushToast(getErrorMessage(error), "error"),
     onFlush: writeSession
   });
 
@@ -511,6 +1649,8 @@ export function App() {
     onCreateProject: openCreateProject,
     onCreateServer: openCreateServer,
     onDismiss: () => {
+      setCreatingKeychainItem(false);
+      setCreatingLocalSshKey(false);
       setInspector({ kind: "hidden" });
       setEditingKeychainItem(null);
     },
@@ -521,12 +1661,19 @@ export function App() {
 
   return (
     <main className="app-shell" style={{ ["--accent" as string]: noxTheme.colors.accent }}>
-      <AppRail view={view} onNavigate={setView} />
+      <AppRail onNavigate={setView} view={view} />
 
       <section className="main-panel main-panel--full">
         <AppHeader
           canEditWorkspace={Boolean(selectedProject)}
-          onBackToDashboard={() => setView("dashboard")}
+          onBackToDashboard={() => {
+            if (view === "workspace" && workspaceMode === "terminal") {
+              setWorkspaceMode("home");
+              return;
+            }
+
+            setView("dashboard");
+          }}
           onCreateWorkspace={openCreateProject}
           onEditWorkspace={openEditProject}
           onSearchChange={setSearch}
@@ -536,36 +1683,184 @@ export function App() {
           view={view}
         />
 
-        <div className="main-panel__status">{statusText}</div>
+        {view === "sessions" ? (
+          <div className="main-panel__quick-actions">
+            <div className="main-panel__quick-actions-row">
+              <button
+                className="quick-action-chip quick-action-chip--primary"
+                onClick={() => void handleConnectLocal()}
+                type="button"
+              >
+                <Laptop size={14} />
+                Local device
+              </button>
+              <button
+                className="quick-action-chip"
+                onClick={() => setSessionLauncherOpen(true)}
+                type="button"
+              >
+                <Server size={14} />
+                Saved server
+              </button>
+              <button className="quick-action-chip" onClick={openToolUpdates} type="button">
+                <ArrowUpCircle size={14} />
+                Agent updates
+              </button>
+              <button
+                className="quick-action-chip"
+                onClick={openLocalSessionPresetEditor}
+                type="button"
+              >
+                Save path
+              </button>
+            </div>
+            {localSessionPresets.length > 0 ? (
+              <div className="main-panel__quick-actions-row main-panel__quick-actions-row--presets">
+                {localSessionPresets.map((preset) => (
+                  <div className="session-preset-chip" key={preset.id}>
+                    <button
+                      className="session-preset-chip__launch"
+                      onClick={() => void handleLaunchLocalPreset(preset.id)}
+                      type="button"
+                    >
+                      {preset.name}
+                    </button>
+                    <button
+                      aria-label={`Remove ${preset.name}`}
+                      className="session-preset-chip__remove"
+                      onClick={() => handleRemoveLocalPreset(preset.id)}
+                      type="button"
+                    >
+                      x
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : view === "workspace" ? (
+          <div className="main-panel__quick-actions">
+            <div className="main-panel__quick-actions-row">
+              <button
+                className="quick-action-chip quick-action-chip--primary"
+                onClick={openCreateServer}
+                type="button"
+              >
+                <Server size={14} />
+                New server
+              </button>
+              <button className="quick-action-chip" onClick={() => setView("sessions")} type="button">
+                <TerminalSquare size={14} />
+                Sessions
+              </button>
+              <button
+                className="quick-action-chip"
+                disabled={!selectedProject}
+                onClick={openEditProject}
+                type="button"
+              >
+                <Settings2 size={14} />
+                Edit workspace
+              </button>
+              <button className="quick-action-chip" onClick={openCreateProject} type="button">
+                <FolderPlus size={14} />
+                New workspace
+              </button>
+            </div>
+          </div>
+        ) : view === "keychain" ? (
+          <div className="main-panel__quick-actions">
+            <div className="main-panel__quick-actions-row">
+              <button className="quick-action-chip quick-action-chip--primary" onClick={openCreateKeychainItem} type="button">
+                <KeyRound size={14} />
+                Add credential
+              </button>
+              <button className="quick-action-chip" onClick={() => void openCreateLocalSshKey()} type="button">
+                <KeyRound size={14} />
+                Create SSH key
+              </button>
+            </div>
+          </div>
+        ) : null}
 
         <AppStage
           activeTabId={activeTabId}
+          favoriteServers={favoriteServers}
+          filteredGitRepositories={filteredGitRepositories}
           filteredKeychainItems={filteredKeychainItems}
           filteredProjects={filteredProjects}
+          gitBranchName={gitBranchName}
+          gitBusyAction={gitBusyAction}
+          gitCommitMessage={gitCommitMessage}
+          gitHubDeviceFlow={gitHubDeviceFlow}
+          gitHubLoading={gitHubLoading}
+          gitHubOwnedRepositories={gitHubOwnedRepositories}
+          gitHubPublicRepositories={gitHubPublicRepositories}
+          gitHubRepositoryLoading={gitHubRepositoryLoading}
+          gitHubRepositoryPane={gitHubRepositoryPane}
+          gitHubSearchLoading={gitHubSearchLoading}
+          gitHubSearchQuery={gitHubSearchQuery}
+          gitHubSession={gitHubSession}
+          gitLoading={gitLoading}
+          onAddGitRepository={() => void handleAddGitRepository()}
+          onCheckoutGitBranch={(repositoryId, branchName) =>
+            void handleCheckoutGitBranch(repositoryId, branchName)
+          }
           onCloseTab={(tabId) => void handleCloseTab(tabId)}
+          onCommitGitRepository={(repositoryId) => void handleCommitGitRepository(repositoryId)}
           onConnect={(serverId, tmuxSession) => void handleConnect(serverId, tmuxSession)}
+          onCancelGitHubSignIn={handleCancelGitHubSignIn}
+          onCopyGitHubCloneUrl={(cloneUrl) => void handleCopyGitHubCloneUrl(cloneUrl)}
+          onCopyGitReviewDraft={(repositoryId) => void handleCopyGitReviewDraft(repositoryId)}
           onCreateProject={openCreateProject}
+          onCreateGitBranch={(repositoryId) => void handleCreateGitBranch(repositoryId)}
           onCreateServer={openCreateServer}
+          onCopyPublicKey={(id) => void handleCopyKeychainPublicKey(id)}
+          copyingPublicKeyId={copyingPublicKeyId}
           onDeleteKeychainItem={(id) => void handleDeleteKeychainItem(id)}
           onEditServer={openEditServerById}
           onExit={handleExit}
+          onGitBranchNameChange={setGitBranchName}
+          onGitCommitMessageChange={setGitCommitMessage}
+          onGitHubRepositoryPaneChange={setGitHubRepositoryPane}
+          onGitHubSearchQueryChange={setGitHubSearchQuery}
           onInput={queueTerminalInput}
-          onNewTab={tabs.length > 0 ? () => void handleOpenSiblingTab() : undefined}
+          onDisconnectGitHub={() => void handleDisconnectGitHub()}
+          onNewTab={view === "sessions" ? () => setSessionLauncherOpen(true) : tabs.length > 0 ? () => void handleOpenSiblingTab() : undefined}
+          onOpenGitRepositoryShell={(repositoryId) => void handleOpenGitRepositoryShell(repositoryId)}
+          localSessionPresets={localSessionPresets}
+          onLaunchLocalPreset={(presetId) => void handleLaunchLocalPreset(presetId)}
+          onOpenSessionLauncher={() => setSessionLauncherOpen(true)}
+          onOpenTerminalSession={handleOpenTerminalSession}
           onOpenProject={handleOpenProject}
+          onOpenPresetEditor={openLocalSessionPresetEditor}
+          onOpenToolUpdates={openToolUpdates}
           onRefreshTmux={() => selectedServerId && void refreshTmuxSessions(selectedServerId)}
+          onRefreshGitHubRepositories={() => void loadGitHubOwnedRepositories()}
+          onRefreshGitRepositories={() => void refreshGitRepositories()}
+          onRemoveGitRepository={handleRemoveGitRepository}
+          onRemoveLocalPreset={handleRemoveLocalPreset}
           onRenameKeychainItem={(item) => {
+            setCreatingKeychainItem(false);
+            setCreatingLocalSshKey(false);
             setEditingKeychainItem(item);
             setKeychainNameDraft(item.name);
+            setKeychainSecretDraft("");
           }}
           onResize={(sessionId, cols, rows) => {
             void resizeSession(sessionId, cols, rows).catch(() => undefined);
           }}
           onSearchChange={setSearch}
+          onSelectGitRepository={setSelectedGitRepositoryId}
           onSelectServer={handleSelectServer}
-          onSelectTab={setActiveTabId}
+          onSelectTab={handleOpenTerminalSession}
+          onStartLocalSession={() => void handleConnectLocal()}
+          onStartGitHubSignIn={() => void handleStartGitHubSignIn()}
           onStatus={handleStatus}
+          onPushGitRepository={(repositoryId) => void handlePushGitRepository(repositoryId)}
           projectServers={projectServers}
           search={search}
+          selectedGitRepositoryId={selectedGitRepositoryId}
           selectedProject={selectedProject}
           selectedServer={selectedServer}
           selectedServerId={selectedServerId}
@@ -575,19 +1870,42 @@ export function App() {
           tmuxLoading={tmuxLoading}
           tmuxSessions={tmuxSessions}
           view={view}
+          workspaceMode={workspaceMode}
+          workspaceTabs={workspaceTabs}
         />
       </section>
 
       <AppDialogs
         editingKeychainItem={editingKeychainItem}
         inspector={inspector}
+        keychainItems={keychainItems}
+        creatingKeychainItem={creatingKeychainItem}
+        creatingLocalSshKey={creatingLocalSshKey}
+        keychainKindDraft={keychainKindDraft}
         keychainNameDraft={keychainNameDraft}
+        keychainSecretDraft={keychainSecretDraft}
+        localSshKeyDirectoryDraft={localSshKeyDirectoryDraft}
+        localSshKeyFileNameDraft={localSshKeyFileNameDraft}
+        localSshKeyPassphraseDraft={localSshKeyPassphraseDraft}
         onCloseInspector={() => setInspector({ kind: "hidden" })}
-        onCloseKeychainEditor={() => setEditingKeychainItem(null)}
+        onCloseKeychainEditor={() => {
+          setCreatingKeychainItem(false);
+          setEditingKeychainItem(null);
+        }}
+        onCloseLocalSshKeyEditor={() => setCreatingLocalSshKey(false)}
+        onCreateLocalSshKey={() => void handleCreateLocalSshKey()}
         onDeleteKeychainItem={(id) => void handleDeleteKeychainItem(id)}
         onDeleteProject={() => void handleDeleteProject()}
         onDeleteServer={() => void handleDeleteServer()}
+        onLocalSshKeyDirectoryChange={setLocalSshKeyDirectoryDraft}
+        onLocalSshKeyFileNameChange={setLocalSshKeyFileNameDraft}
+        onLocalSshKeyNameChange={setKeychainNameDraft}
+        onLocalSshKeyPassphraseChange={setLocalSshKeyPassphraseDraft}
+        onKeychainKindChange={setKeychainKindDraft}
         onKeychainNameChange={setKeychainNameDraft}
+        onKeychainSecretChange={setKeychainSecretDraft}
+        onBrowseLocalSshKeyDirectory={() => void handleBrowseLocalSshKeyDirectory()}
+        onBrowseKeychainSecret={() => void handleBrowseKeychainSecret()}
         onProjectChange={(field, value) =>
           setProjectDraft((current) => ({
             ...current,
@@ -597,17 +1915,199 @@ export function App() {
         onSaveKeychainItem={() => void handleSaveKeychainItem()}
         onSaveProject={() => void saveProject()}
         onSaveServer={() => void saveServer()}
-        onServerChange={(field, value) =>
-          setServerDraft((current) => ({
-            ...current,
-            [field]: value
-          }))
-        }
+        onServerChange={handleServerDraftChange}
         projectDraft={projectDraft}
         projects={projects}
         saving={saving}
         serverDraft={serverDraft}
       />
+
+      {sessionLauncherOpen ? (
+        <SessionLauncher
+          onClose={() => setSessionLauncherOpen(false)}
+          onConnectLocal={() => void handleConnectLocal()}
+          onConnectServer={(serverId) => void handleConnect(serverId)}
+          projects={projects}
+          servers={servers}
+        />
+      ) : null}
+
+      {localSessionPresetEditorOpen ? (
+        <LocalSessionPresetEditor
+          name={localSessionPresetName}
+          onBrowsePath={() => void handleBrowseLocalSessionPresetPath()}
+          onClose={() => setLocalSessionPresetEditorOpen(false)}
+          onNameChange={setLocalSessionPresetName}
+          onPathChange={setLocalSessionPresetPath}
+          onSave={handleSaveLocalSessionPreset}
+          path={localSessionPresetPath}
+          saving={false}
+        />
+      ) : null}
+
+      {toolUpdatesOpen ? (
+        <ToolUpdatesPanel
+          loading={toolUpdatesLoading}
+          onClose={() => {
+            toolUpdatesRequestIdRef.current += 1;
+            setToolUpdatesOpen(false);
+          }}
+          onRefresh={() => void loadToolUpdates()}
+          onRunUpdate={(toolId) => void handleRunToolUpdate(toolId)}
+          tools={toolUpdates}
+          updatingToolId={toolUpdateBusyId}
+        />
+      ) : null}
+
+      {toasts.length > 0 ? (
+        <div aria-atomic="true" aria-live="polite" className="toast-stack">
+          {toasts.map((toast) => (
+            <div className={`toast toast--${toast.tone}`} key={toast.id} role="status">
+              <span>{toast.message}</span>
+              <button
+                aria-label="Dismiss notification"
+                className="toast__dismiss"
+                onClick={() => dismissToast(toast.id)}
+                type="button"
+              >
+                x
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </main>
   );
+}
+
+function loadLocalSessionPresets(): LocalSessionPreset[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const raw = window.localStorage.getItem(LOCAL_SESSION_PRESETS_KEY);
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.filter(isLocalSessionPreset);
+  } catch {
+    return [];
+  }
+}
+
+function loadLocalGitRepositories(): LocalGitRepository[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const raw = window.localStorage.getItem(LOCAL_GIT_REPOSITORIES_KEY);
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.filter(isLocalGitRepository);
+  } catch {
+    return [];
+  }
+}
+
+function persistLocalSessionPresets(presets: LocalSessionPreset[]) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(LOCAL_SESSION_PRESETS_KEY, JSON.stringify(presets));
+}
+
+function persistLocalGitRepositories(repositories: LocalGitRepository[]) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(LOCAL_GIT_REPOSITORIES_KEY, JSON.stringify(repositories));
+}
+
+function isLocalSessionPreset(value: unknown): value is LocalSessionPreset {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.id === "string" &&
+    typeof candidate.name === "string" &&
+    typeof candidate.path === "string"
+  );
+}
+
+function isLocalGitRepository(value: unknown): value is LocalGitRepository {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.id === "string" &&
+    typeof candidate.name === "string" &&
+    typeof candidate.path === "string"
+  );
+}
+
+function buildGitReviewDraft(repository: GitRepositoryRecord) {
+  const review = repository.review;
+  const commits = repository.recentCommits
+    .slice(0, Math.min(repository.recentCommits.length, 5))
+    .map((commit) => `- ${commit.summary} (${commit.id.slice(0, 7)})`)
+    .join("\n");
+  const changes = repository.changes
+    .slice(0, Math.min(repository.changes.length, 8))
+    .map((change) => `- ${change.status}: ${change.path}`)
+    .join("\n");
+
+  return [
+    `# ${repository.name}`,
+    "",
+    `Branch: ${repository.branch}`,
+    `Base: ${review?.baseBranch ?? repository.defaultBase ?? "n/a"}`,
+    review
+      ? `Ready for review with ${review.commitCount} commit${review.commitCount === 1 ? "" : "s"} and ${review.changedFiles} changed file${review.changedFiles === 1 ? "" : "s"}.`
+      : "Local review draft is not ready yet.",
+    "",
+    "## Recent commits",
+    commits || "- No commits yet",
+    "",
+    "## Working tree",
+    changes || "- Working tree is clean"
+  ].join("\n");
+}
+
+function mergeTerminalStatus(
+  current: TerminalTab["status"] | undefined,
+  next: TerminalTab["status"]
+): TerminalTab["status"] {
+  if (!current) {
+    return next;
+  }
+
+  const rank: Record<TerminalTab["status"], number> = {
+    connecting: 1,
+    connected: 2,
+    closed: 3,
+    error: 3
+  };
+
+  return rank[next] >= rank[current] ? next : current;
 }
