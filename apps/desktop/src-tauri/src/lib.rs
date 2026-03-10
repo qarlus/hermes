@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -32,6 +32,7 @@ const AUTH_SSH_KEY: &str = "sshKey";
 const AUTH_PASSWORD: &str = "password";
 const KEYCHAIN_SERVICE: &str = "Hermes";
 const GITHUB_KEYRING_ACCOUNT: &str = "github-device-token";
+const GITHUB_TOKEN_SETTING_KEY: &str = "github.token";
 const GITHUB_API_VERSION: &str = "2022-11-28";
 const GITHUB_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 const GITHUB_OAUTH_ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
@@ -170,6 +171,23 @@ struct ConnectLocalSessionInput {
     label: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateTerminalCommandInput {
+    name: String,
+    command: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalCommandRecord {
+    id: String,
+    name: String,
+    command: String,
+    created_at: String,
+    updated_at: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TerminalTab {
@@ -178,6 +196,7 @@ struct TerminalTab {
     title: String,
     status: String,
     started_at: String,
+    cwd: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -259,6 +278,14 @@ struct GitBranchRecord {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct GitRemoteRecord {
+    name: String,
+    fetch_url: String,
+    push_url: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct GitReviewRecord {
     base_branch: String,
     commit_count: i64,
@@ -274,6 +301,7 @@ struct GitRepositoryRecord {
     upstream: Option<String>,
     has_remote: bool,
     remote_name: Option<String>,
+    remotes: Vec<GitRemoteRecord>,
     ahead: i64,
     behind: i64,
     staged_count: i64,
@@ -314,6 +342,7 @@ struct GitHubRepositoryRecord {
     name: String,
     full_name: String,
     owner_login: String,
+    owner_type: String,
     description: String,
     private: bool,
     stargazer_count: i64,
@@ -384,6 +413,8 @@ struct GitHubRepositoryApiResponse {
 #[derive(Debug, Deserialize)]
 struct GitHubRepositoryOwnerApiResponse {
     login: String,
+    #[serde(rename = "type")]
+    owner_type: String,
 }
 
 #[derive(Clone, Copy)]
@@ -464,6 +495,20 @@ impl Database {
                     use_tmux INTEGER NOT NULL DEFAULT 0,
                     is_favorite INTEGER NOT NULL DEFAULT 0,
                     notes TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS terminal_commands (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    command TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -1125,6 +1170,75 @@ impl Database {
         Ok(())
     }
 
+    fn list_terminal_commands(&self) -> Result<Vec<TerminalCommandRecord>, String> {
+        let connection = self.connection.lock().map_err(lock_error)?;
+        let mut statement = connection
+            .prepare(
+                r#"
+                SELECT id, name, command, created_at, updated_at
+                FROM terminal_commands
+                ORDER BY updated_at DESC, name COLLATE NOCASE ASC
+                "#,
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([], map_terminal_command_row)
+            .map_err(|error| error.to_string())?;
+
+        let mut commands = Vec::new();
+        for row in rows {
+            commands.push(row.map_err(|error| error.to_string())?);
+        }
+
+        Ok(commands)
+    }
+
+    fn get_terminal_command(&self, id: &str) -> Result<TerminalCommandRecord, String> {
+        let connection = self.connection.lock().map_err(lock_error)?;
+        connection
+            .query_row(
+                r#"
+                SELECT id, name, command, created_at, updated_at
+                FROM terminal_commands
+                WHERE id = ?1
+                "#,
+                [id],
+                map_terminal_command_row,
+            )
+            .map_err(|error| error.to_string())
+    }
+
+    fn create_terminal_command(
+        &self,
+        input: CreateTerminalCommandInput,
+    ) -> Result<TerminalCommandRecord, String> {
+        validate_terminal_command_input(&input)?;
+
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let connection = self.connection.lock().map_err(lock_error)?;
+        connection
+            .execute(
+                r#"
+                INSERT INTO terminal_commands (id, name, command, created_at, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5)
+                "#,
+                params![id, input.name.trim(), input.command.trim(), now, now],
+            )
+            .map_err(|error| error.to_string())?;
+        drop(connection);
+
+        self.get_terminal_command(&id)
+    }
+
+    fn delete_terminal_command(&self, id: &str) -> Result<(), String> {
+        let connection = self.connection.lock().map_err(lock_error)?;
+        connection
+            .execute("DELETE FROM terminal_commands WHERE id = ?1", [id])
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
     fn prepare_server_auth(
         &self,
         connection: &Connection,
@@ -1393,6 +1507,120 @@ impl Database {
         self.read_secret_with_connection(&connection, credential_id)
     }
 
+    fn store_setting_secret_with_connection(
+        &self,
+        connection: &Connection,
+        key: &str,
+        value: &str,
+    ) -> Result<(), String> {
+        let encrypted = encrypt_secret(&self.secret_key, value)?;
+        connection
+            .execute(
+                r#"
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES (?1, ?2, ?3)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                "#,
+                params![key, encrypted, Utc::now().to_rfc3339()],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    fn read_setting_secret_with_connection(
+        &self,
+        connection: &Connection,
+        key: &str,
+    ) -> Result<Option<String>, String> {
+        let value: Option<String> = connection
+            .query_row(
+                "SELECT value FROM app_settings WHERE key = ?1",
+                [key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+
+        match value.filter(|value| !value.trim().is_empty()) {
+            Some(value) => decrypt_secret(&self.secret_key, &value).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    fn delete_setting_secret_with_connection(
+        &self,
+        connection: &Connection,
+        key: &str,
+    ) -> Result<(), String> {
+        connection
+            .execute("DELETE FROM app_settings WHERE key = ?1", [key])
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    fn load_github_token(&self) -> Result<Option<String>, String> {
+        let connection = self.connection.lock().map_err(lock_error)?;
+        if let Some(token) = self.read_setting_secret_with_connection(&connection, GITHUB_TOKEN_SETTING_KEY)? {
+            return Ok(Some(token));
+        }
+
+        match github_keyring_entry()?.get_password() {
+            Ok(token) => {
+                let trimmed = token.trim().to_string();
+                if trimmed.is_empty() {
+                    return Ok(None);
+                }
+
+                self.store_setting_secret_with_connection(&connection, GITHUB_TOKEN_SETTING_KEY, &trimmed)?;
+                Ok(Some(trimmed))
+            }
+            Err(KeyringError::NoEntry) => Ok(None),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    fn save_github_token(&self, token: &str) -> Result<(), String> {
+        let trimmed = token.trim();
+        if trimmed.is_empty() {
+            return Err("GitHub token is required.".to_string());
+        }
+
+        let connection = self.connection.lock().map_err(lock_error)?;
+        self.store_setting_secret_with_connection(&connection, GITHUB_TOKEN_SETTING_KEY, trimmed)?;
+
+        if let Ok(entry) = github_keyring_entry() {
+            let _ = entry.set_password(trimmed);
+        }
+
+        Ok(())
+    }
+
+    fn delete_github_token(&self) -> Result<(), String> {
+        let connection = self.connection.lock().map_err(lock_error)?;
+        self.delete_setting_secret_with_connection(&connection, GITHUB_TOKEN_SETTING_KEY)?;
+
+        match github_keyring_entry()?.delete_credential() {
+            Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    fn load_github_session(&self) -> Result<Option<GitHubAuthSession>, String> {
+        let Some(token) = self.load_github_token()? else {
+            return Ok(None);
+        };
+
+        match github_session_from_token(&token) {
+            Ok(session) => Ok(Some(session)),
+            Err(error) => {
+                let _ = self.delete_github_token();
+                Err(error)
+            }
+        }
+    }
+
     fn delete_secret_with_connection(
         &self,
         connection: &Connection,
@@ -1636,6 +1864,7 @@ fn connect_session(
         command,
         title,
         server.id.clone(),
+        None,
         auto_password,
         "connect_session",
         &log_message,
@@ -1649,7 +1878,7 @@ fn connect_local_session(
     state: State<'_, AppState>,
     input: Option<ConnectLocalSessionInput>,
 ) -> Result<TerminalTab, String> {
-    let (command, title) = local_shell_command(input.as_ref())?;
+    let (command, title, cwd) = local_shell_command(input.as_ref())?;
 
     spawn_session(
         app,
@@ -1657,6 +1886,7 @@ fn connect_local_session(
         command,
         title,
         LOCAL_SESSION_SERVER_ID.to_string(),
+        cwd,
         None,
         "connect_local_session",
         "starting local terminal session",
@@ -1665,10 +1895,107 @@ fn connect_local_session(
 }
 
 #[tauri::command]
+fn list_terminal_commands(state: State<'_, AppState>) -> Result<Vec<TerminalCommandRecord>, String> {
+    state.db.list_terminal_commands()
+}
+
+#[tauri::command]
+fn create_terminal_command(
+    state: State<'_, AppState>,
+    input: CreateTerminalCommandInput,
+) -> Result<TerminalCommandRecord, String> {
+    state.db.create_terminal_command(input)
+}
+
+#[tauri::command]
+fn delete_terminal_command(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.db.delete_terminal_command(&id)
+}
+
+#[tauri::command]
 async fn inspect_git_repository(path: String) -> Result<GitRepositoryRecord, String> {
     tauri::async_runtime::spawn_blocking(move || load_git_repository(&path))
         .await
         .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn get_git_repository_change_diff(path: String, file_path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || load_git_repository_change_diff(&path, &file_path))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn clone_git_repository(
+    clone_url: String,
+    parent_directory: String,
+    directory_name: String,
+) -> Result<GitRepositoryRecord, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_git_available()?;
+
+        let trimmed_clone_url = clone_url.trim();
+        if trimmed_clone_url.is_empty() {
+            return Err("Clone URL is required.".to_string());
+        }
+
+        let trimmed_parent_directory = parent_directory.trim();
+        if trimmed_parent_directory.is_empty() {
+            return Err("Choose a destination folder before cloning.".to_string());
+        }
+
+        let parent = PathBuf::from(trimmed_parent_directory);
+        if !parent.exists() {
+            return Err(format!(
+                "Clone destination was not found: {}",
+                parent.display()
+            ));
+        }
+        if !parent.is_dir() {
+            return Err("Clone destination must be a directory.".to_string());
+        }
+
+        let target_name = sanitize_clone_directory_name(&directory_name);
+        if target_name.is_empty() {
+            return Err("Clone folder name is invalid.".to_string());
+        }
+
+        let target = parent.join(&target_name);
+        if target.exists() {
+            return Err(format!(
+                "Clone target already exists: {}",
+                target.display()
+            ));
+        }
+
+        let output = git_command(&parent)
+            .args(["clone", trimmed_clone_url, target_name.as_str()])
+            .output()
+            .map_err(|error| error.to_string())?;
+        if !output.status.success() {
+            return Err(command_error_message(
+                &output,
+                "Failed to clone the repository.",
+            ));
+        }
+
+        load_git_repository_from_root(&target)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn find_local_github_checkouts(
+    repository_full_name: String,
+    repository_name: String,
+) -> Result<Vec<GitRepositoryRecord>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        discover_local_github_checkouts(&repository_full_name, &repository_name)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1809,8 +2136,13 @@ async fn checkout_git_branch(path: String, name: String) -> Result<GitRepository
 }
 
 #[tauri::command]
-fn get_github_session() -> Result<Option<GitHubAuthSession>, String> {
-    load_github_session_from_keyring()
+fn get_github_session(state: State<'_, AppState>) -> Result<Option<GitHubAuthSession>, String> {
+    state.db.load_github_session()
+}
+
+#[tauri::command]
+fn is_github_device_flow_available() -> bool {
+    resolve_github_client_id().is_some()
 }
 
 #[tauri::command]
@@ -1885,7 +2217,7 @@ fn poll_github_device_flow(
     let payload: GitHubAccessTokenApiResponse = parse_github_json(response)?;
 
     if let Some(access_token) = payload.access_token {
-        save_github_token(&access_token)?;
+        state.db.save_github_token(&access_token)?;
         let session = github_session_from_token(&access_token)?;
         let mut current_flow = state.github_device_flow.lock().map_err(lock_error)?;
         *current_flow = None;
@@ -1916,38 +2248,67 @@ fn poll_github_device_flow(
 }
 
 #[tauri::command]
-fn disconnect_github() -> Result<(), String> {
-    delete_github_token()
+fn sign_in_github_with_token(state: State<'_, AppState>, token: String) -> Result<GitHubAuthSession, String> {
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        return Err("Enter a GitHub personal access token.".to_string());
+    }
+
+    let session = github_session_from_token(trimmed)?;
+    state.db.save_github_token(trimmed)?;
+    Ok(session)
 }
 
 #[tauri::command]
-fn list_github_repositories() -> Result<Vec<GitHubRepositoryRecord>, String> {
-    let token = load_github_token()?.ok_or_else(|| "Sign in to GitHub first.".to_string())?;
+fn disconnect_github(state: State<'_, AppState>) -> Result<(), String> {
+    state.db.delete_github_token()
+}
+
+#[tauri::command]
+fn list_github_repositories(state: State<'_, AppState>) -> Result<Vec<GitHubRepositoryRecord>, String> {
+    let token = state
+        .db
+        .load_github_token()?
+        .ok_or_else(|| "Sign in to GitHub first.".to_string())?;
     let client = github_http_client()?;
-    let response = client
-        .get(GITHUB_USER_REPOS_URL)
-        .headers(github_api_headers(Some(&token))?)
-        .query(&[
-            ("per_page", "24"),
-            ("sort", "updated"),
-            ("affiliation", "owner,collaborator,organization_member"),
-        ])
-        .send()
-        .map_err(|error| error.to_string())?;
+    let mut repositories = Vec::new();
+    let per_page = 100;
 
-    let repositories: Vec<GitHubRepositoryApiResponse> = parse_github_json(response)?;
-    Ok(repositories.into_iter().map(map_github_repository).collect())
+    for page in 1..=5 {
+        let response = client
+            .get(GITHUB_USER_REPOS_URL)
+            .headers(github_api_headers(Some(&token))?)
+            .query(&[
+                ("per_page", per_page.to_string()),
+                ("page", page.to_string()),
+                ("sort", "updated".to_string()),
+                ("direction", "desc".to_string()),
+                ("type", "all".to_string()),
+            ])
+            .send()
+            .map_err(|error| error.to_string())?;
+
+        let batch: Vec<GitHubRepositoryApiResponse> = parse_github_json(response)?;
+        let batch_len = batch.len();
+        repositories.extend(batch.into_iter().map(map_github_repository));
+
+        if batch_len < per_page as usize {
+            break;
+        }
+    }
+
+    Ok(repositories)
 }
 
 #[tauri::command]
-fn search_github_repositories(query: String) -> Result<Vec<GitHubRepositoryRecord>, String> {
+fn search_github_repositories(state: State<'_, AppState>, query: String) -> Result<Vec<GitHubRepositoryRecord>, String> {
     let trimmed_query = query.trim();
     if trimmed_query.is_empty() {
         return Ok(Vec::new());
     }
 
     let client = github_http_client()?;
-    let token = load_github_token()?;
+    let token = state.db.load_github_token()?;
     let response = client
         .get(GITHUB_SEARCH_REPOSITORIES_URL)
         .headers(github_api_headers(token.as_deref())?)
@@ -2149,14 +2510,22 @@ pub fn run() {
             list_tmux_sessions,
             connect_session,
             connect_local_session,
+            list_terminal_commands,
+            create_terminal_command,
+            delete_terminal_command,
             inspect_git_repository,
+            get_git_repository_change_diff,
+            clone_git_repository,
+            find_local_github_checkouts,
             commit_git_repository,
             push_git_repository,
             create_git_branch,
             checkout_git_branch,
             get_github_session,
+            is_github_device_flow_available,
             start_github_device_flow,
             poll_github_device_flow,
+            sign_in_github_with_token,
             disconnect_github,
             list_github_repositories,
             search_github_repositories,
@@ -2193,6 +2562,7 @@ fn spawn_reader_thread(
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     auto_password: Option<String>,
     session_status: Arc<Mutex<String>>,
+    normalize_local_windows_newlines: bool,
 ) {
     thread::spawn(move || {
         let mut buffer = [0_u8; 4096];
@@ -2203,7 +2573,10 @@ fn spawn_reader_thread(
             match reader.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(read) => {
-                    let chunk = String::from_utf8_lossy(&buffer[..read]).to_string();
+                    let chunk = normalize_terminal_chunk(
+                        String::from_utf8_lossy(&buffer[..read]).to_string(),
+                        normalize_local_windows_newlines,
+                    );
 
                     if !announced_connected && !chunk.trim().is_empty() {
                         if let Ok(mut status) = session_status.lock() {
@@ -2253,6 +2626,15 @@ fn spawn_reader_thread(
             }
         }
     });
+}
+
+fn normalize_terminal_chunk(chunk: String, normalize_local_windows_newlines: bool) -> String {
+    #[cfg(target_os = "windows")]
+    if normalize_local_windows_newlines {
+        return chunk.replace("\r\r\n", "\r\n");
+    }
+
+    chunk
 }
 
 fn spawn_wait_thread(
@@ -2324,6 +2706,7 @@ fn spawn_session(
     command: CommandBuilder,
     title: String,
     server_id: String,
+    cwd: Option<String>,
     auto_password: Option<String>,
     log_context: &str,
     log_message: &str,
@@ -2389,6 +2772,7 @@ fn spawn_session(
         writer,
         auto_password,
         session_status.clone(),
+        cfg!(target_os = "windows") && server_id == LOCAL_SESSION_SERVER_ID,
     );
     spawn_wait_thread(
         app,
@@ -2405,6 +2789,7 @@ fn spawn_session(
         title,
         status: "connecting".to_string(),
         started_at,
+        cwd,
     })
 }
 
@@ -2412,7 +2797,9 @@ fn emit_status(app: &tauri::AppHandle, event: TerminalStatusEvent) {
     let _ = app.emit("terminal:status", event);
 }
 
-fn local_shell_command(input: Option<&ConnectLocalSessionInput>) -> Result<(CommandBuilder, String), String> {
+fn local_shell_command(
+    input: Option<&ConnectLocalSessionInput>,
+) -> Result<(CommandBuilder, String, Option<String>), String> {
     let cwd = input
         .and_then(|value| value.cwd.as_deref())
         .map(str::trim)
@@ -2437,7 +2824,11 @@ fn local_shell_command(input: Option<&ConnectLocalSessionInput>) -> Result<(Comm
         if let Some(path) = cwd.as_ref() {
             command.cwd(path);
         }
-        Ok((command, local_session_title(label_override, cwd.as_deref(), &label)))
+        Ok((
+            command,
+            local_session_title(label_override, cwd.as_deref(), &label),
+            cwd.as_ref().map(|path| path.to_string_lossy().to_string()),
+        ))
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -2449,7 +2840,11 @@ fn local_shell_command(input: Option<&ConnectLocalSessionInput>) -> Result<(Comm
         if let Some(path) = cwd.as_ref() {
             command.cwd(path);
         }
-        Ok((command, local_session_title(label_override, cwd.as_deref(), &label)))
+        Ok((
+            command,
+            local_session_title(label_override, cwd.as_deref(), &label),
+            cwd.as_ref().map(|path| path.to_string_lossy().to_string()),
+        ))
     }
 }
 
@@ -2716,6 +3111,43 @@ fn load_git_repository(path: &str) -> Result<GitRepositoryRecord, String> {
     load_git_repository_from_root(&root)
 }
 
+fn discover_local_github_checkouts(
+    repository_full_name: &str,
+    repository_name: &str,
+) -> Result<Vec<GitRepositoryRecord>, String> {
+    ensure_git_available()?;
+
+    let target_slug = repository_full_name.trim().to_ascii_lowercase();
+    let target_name = repository_name.trim().to_ascii_lowercase();
+    if target_slug.is_empty() || target_name.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut discovered = Vec::new();
+    let mut discovered_roots = HashSet::new();
+    let mut visited_directories = HashSet::new();
+    let mut visited_count = 0_usize;
+
+    for root in candidate_local_repository_roots() {
+        scan_for_github_checkout(
+            &root,
+            &target_name,
+            &target_slug,
+            &mut visited_directories,
+            &mut discovered_roots,
+            &mut discovered,
+            &mut visited_count,
+        )?;
+
+        if discovered.len() >= 6 {
+            break;
+        }
+    }
+
+    discovered.sort_by(|left, right| left.root_path.cmp(&right.root_path));
+    Ok(discovered)
+}
+
 fn load_git_repository_from_root(root: &Path) -> Result<GitRepositoryRecord, String> {
     ensure_git_available()?;
 
@@ -2730,8 +3162,8 @@ fn load_git_repository_from_root(root: &Path) -> Result<GitRepositoryRecord, Str
 
     let status = parse_git_status(&String::from_utf8_lossy(&status_output.stdout), &branch);
     let branches = git_branches(root, &branch)?;
-    let remotes = git_remote_names(root)?;
-    let remote_name = remotes.first().cloned();
+    let remotes = git_remotes(root)?;
+    let remote_name = remotes.first().map(|remote| remote.name.clone());
     let recent_commits = git_recent_commits(root)?;
     let default_base = git_default_base_branch(root, &branches)?;
     let review = git_review_record(root, &branch, default_base.as_deref())?;
@@ -2748,6 +3180,7 @@ fn load_git_repository_from_root(root: &Path) -> Result<GitRepositoryRecord, Str
         upstream: status.upstream,
         has_remote: !remotes.is_empty(),
         remote_name,
+        remotes,
         ahead: status.ahead,
         behind: status.behind,
         staged_count: status.staged_count,
@@ -2763,6 +3196,288 @@ fn load_git_repository_from_root(root: &Path) -> Result<GitRepositoryRecord, Str
         changes: status.changes,
         review,
     })
+}
+
+fn load_git_repository_change_diff(path: &str, file_path: &str) -> Result<String, String> {
+    ensure_git_available()?;
+
+    let trimmed_path = path.trim();
+    if trimmed_path.is_empty() {
+        return Err("Repository path is required.".to_string());
+    }
+
+    let trimmed_file_path = file_path.trim();
+    if trimmed_file_path.is_empty() {
+        return Err("Change path is required.".to_string());
+    }
+
+    let root = PathBuf::from(trimmed_path);
+    if !root.exists() {
+        return Err(format!("Repository path was not found: {}", root.display()));
+    }
+
+    let staged = git_diff_output(&root, &["diff", "--cached", "--no-ext-diff", "--no-color", "--", trimmed_file_path])?;
+    let unstaged = git_diff_output(&root, &["diff", "--no-ext-diff", "--no-color", "--", trimmed_file_path])?;
+
+    let mut sections = Vec::new();
+    if !staged.trim().is_empty() {
+        sections.push(staged);
+    }
+    if !unstaged.trim().is_empty() {
+        sections.push(unstaged);
+    }
+    if !sections.is_empty() {
+        return Ok(sections.join("\n\n"));
+    }
+
+    let against_head =
+        git_diff_output(&root, &["diff", "--no-ext-diff", "--no-color", "HEAD", "--", trimmed_file_path])?;
+    if !against_head.trim().is_empty() {
+        return Ok(against_head);
+    }
+
+    let absolute_path = root.join(trimmed_file_path);
+    if absolute_path.is_file() {
+        let contents = fs::read_to_string(&absolute_path).map_err(|error| {
+            format!(
+                "Failed to read {} for diff preview: {error}",
+                absolute_path.display()
+            )
+        })?;
+
+        return Ok(build_untracked_file_diff(trimmed_file_path, &contents));
+    }
+
+    Ok(format!("No diff available for {trimmed_file_path}."))
+}
+
+fn git_diff_output(root: &Path, args: &[&str]) -> Result<String, String> {
+    let output = git_command_output(root, args)?;
+    if !output.status.success() {
+        return Err(command_error_message(
+            &output,
+            "Failed to load repository diff.",
+        ));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn build_untracked_file_diff(file_path: &str, contents: &str) -> String {
+    let mut diff = String::new();
+    diff.push_str(&format!("diff --git a/{file_path} b/{file_path}\n"));
+    diff.push_str("new file mode 100644\n");
+    diff.push_str("--- /dev/null\n");
+    diff.push_str(&format!("+++ b/{file_path}\n"));
+
+    let lines: Vec<&str> = contents.lines().collect();
+    let line_count = lines.len().max(1);
+    diff.push_str(&format!("@@ -0,0 +1,{line_count} @@\n"));
+
+    if lines.is_empty() {
+        diff.push_str("+\n");
+        return diff;
+    }
+
+    for line in lines.into_iter().take(400) {
+        diff.push('+');
+        diff.push_str(line);
+        diff.push('\n');
+    }
+
+    if contents.lines().count() > 400 {
+        diff.push_str("+\n");
+        diff.push_str("+[diff truncated]\n");
+    }
+
+    diff
+}
+
+fn candidate_local_repository_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let mut seen = HashSet::new();
+
+    if let Ok(current_dir) = std::env::current_dir() {
+        push_existing_directory(&mut roots, &mut seen, current_dir);
+    }
+
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
+
+    if let Some(home) = home {
+        for candidate in [
+            home.join("Documents"),
+            home.join("Desktop"),
+            home.join("source"),
+            home.join("source").join("repos"),
+            home.join("Code"),
+            home.join("code"),
+            home.join("Dev"),
+            home.join("dev"),
+            home.join("Projects"),
+            home.join("projects"),
+            home.join("Repos"),
+            home.join("repos"),
+            home.join("Repositories"),
+            home.join("Downloads"),
+            home.clone(),
+        ] {
+            push_existing_directory(&mut roots, &mut seen, candidate);
+        }
+    }
+
+    roots
+}
+
+fn push_existing_directory(roots: &mut Vec<PathBuf>, seen: &mut HashSet<String>, candidate: PathBuf) {
+    if !candidate.is_dir() {
+        return;
+    }
+
+    let key = candidate.to_string_lossy().to_ascii_lowercase();
+    if seen.insert(key) {
+        roots.push(candidate);
+    }
+}
+
+fn scan_for_github_checkout(
+    root: &Path,
+    target_name: &str,
+    target_slug: &str,
+    visited_directories: &mut HashSet<String>,
+    discovered_roots: &mut HashSet<String>,
+    discovered: &mut Vec<GitRepositoryRecord>,
+    visited_count: &mut usize,
+) -> Result<(), String> {
+    const MAX_SCAN_DEPTH: usize = 4;
+    const MAX_VISITED_DIRECTORIES: usize = 4_000;
+
+    if !root.is_dir() {
+        return Ok(());
+    }
+
+    let mut queue = VecDeque::from([(root.to_path_buf(), 0_usize)]);
+
+    while let Some((directory, depth)) = queue.pop_front() {
+        if *visited_count >= MAX_VISITED_DIRECTORIES || discovered.len() >= 6 {
+            break;
+        }
+
+        let key = directory.to_string_lossy().to_ascii_lowercase();
+        if !visited_directories.insert(key) {
+            continue;
+        }
+        *visited_count += 1;
+
+        let directory_name = directory
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(|value| value.trim().to_ascii_lowercase())
+            .unwrap_or_default();
+        let has_git_marker = directory.join(".git").exists();
+
+        if has_git_marker || directory_name == target_name {
+            if let Some(snapshot) = matching_github_checkout(&directory, target_slug)? {
+                if discovered_roots.insert(snapshot.root_path.clone()) {
+                    discovered.push(snapshot);
+                }
+            }
+        }
+
+        if depth >= MAX_SCAN_DEPTH {
+            continue;
+        }
+
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+
+        for entry in entries {
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+
+            let path = entry.path();
+            if should_skip_checkout_scan_directory(&path) {
+                continue;
+            }
+
+            queue.push_back((path, depth + 1));
+        }
+    }
+
+    Ok(())
+}
+
+fn matching_github_checkout(path: &Path, target_slug: &str) -> Result<Option<GitRepositoryRecord>, String> {
+    let snapshot = match load_git_repository(&path.to_string_lossy()) {
+        Ok(snapshot) => snapshot,
+        Err(_) => return Ok(None),
+    };
+
+    let matches_remote = snapshot.remotes.iter().any(|remote| {
+        [
+            normalize_github_repository_slug(&remote.fetch_url),
+            normalize_github_repository_slug(&remote.push_url),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|slug| slug == target_slug)
+    });
+
+    Ok(matches_remote.then_some(snapshot))
+}
+
+fn should_skip_checkout_scan_directory(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+        return false;
+    };
+
+    matches!(
+        name,
+        ".git"
+            | "node_modules"
+            | "target"
+            | "dist"
+            | "build"
+            | ".next"
+            | ".nuxt"
+            | ".svelte-kit"
+            | ".turbo"
+            | ".cache"
+            | ".cargo"
+            | ".rustup"
+            | ".pnpm-store"
+            | ".yarn"
+            | "vendor"
+            | "AppData"
+            | "Library"
+            | "tmp"
+            | "Temp"
+            | ".venv"
+            | "venv"
+    )
+}
+
+fn normalize_github_repository_slug(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_end_matches(".git");
+    let github_index = trimmed.to_ascii_lowercase().find("github.com")?;
+    let suffix = trimmed.get(github_index + "github.com".len()..)?.trim();
+    let suffix = suffix.trim_start_matches([':', '/']);
+    let suffix = suffix.trim_end_matches('/');
+    if suffix.is_empty() || !suffix.contains('/') {
+        return None;
+    }
+
+    Some(suffix.to_ascii_lowercase())
 }
 
 fn current_git_branch(root: &Path) -> Result<String, String> {
@@ -2898,18 +3613,44 @@ fn git_status_is_conflicted(x: char, y: char) -> bool {
     )
 }
 
-fn git_remote_names(root: &Path) -> Result<Vec<String>, String> {
-    let output = git_command_output(root, &["remote"])?;
+fn git_remotes(root: &Path) -> Result<Vec<GitRemoteRecord>, String> {
+    let output = git_command_output(root, &["remote", "-v"])?;
     if !output.status.success() {
         return Ok(Vec::new());
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(str::to_string)
-        .collect())
+    let mut remotes = HashMap::<String, GitRemoteRecord>::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let mut parts = line.split_whitespace();
+        let Some(name) = parts.next().map(str::trim).filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        let Some(url) = parts.next().map(str::trim).filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        let direction = parts
+            .next()
+            .map(str::trim)
+            .map(|value| value.trim_start_matches('(').trim_end_matches(')'))
+            .unwrap_or("fetch");
+
+        let entry = remotes
+            .entry(name.to_string())
+            .or_insert_with(|| GitRemoteRecord {
+                name: name.to_string(),
+                fetch_url: url.to_string(),
+                push_url: url.to_string(),
+            });
+
+        match direction {
+            "push" => entry.push_url = url.to_string(),
+            _ => entry.fetch_url = url.to_string(),
+        }
+    }
+
+    let mut values = remotes.into_values().collect::<Vec<_>>();
+    values.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(values)
 }
 
 fn git_branches(root: &Path, current_branch: &str) -> Result<Vec<GitBranchRecord>, String> {
@@ -3050,6 +3791,13 @@ fn git_review_record(
 }
 
 fn github_client_id() -> Result<String, String> {
+    resolve_github_client_id()
+        .ok_or_else(|| {
+            "GitHub sign-in is not configured for this Hermes build yet. Set HERMES_GITHUB_CLIENT_ID before launching Hermes.".to_string()
+        })
+}
+
+fn resolve_github_client_id() -> Option<String> {
     ["HERMES_GITHUB_CLIENT_ID", "GITHUB_CLIENT_ID"]
         .into_iter()
         .find_map(|key| {
@@ -3057,9 +3805,6 @@ fn github_client_id() -> Result<String, String> {
                 .ok()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
-        })
-        .ok_or_else(|| {
-            "GitHub sign-in is not configured for this Hermes build yet. Set HERMES_GITHUB_CLIENT_ID before launching Hermes.".to_string()
         })
 }
 
@@ -3118,46 +3863,6 @@ fn github_keyring_entry() -> Result<Entry, String> {
     Entry::new(KEYCHAIN_SERVICE, GITHUB_KEYRING_ACCOUNT).map_err(|error| error.to_string())
 }
 
-fn load_github_token() -> Result<Option<String>, String> {
-    match github_keyring_entry()?.get_password() {
-        Ok(token) => {
-            let trimmed = token.trim().to_string();
-            if trimmed.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(trimmed))
-            }
-        }
-        Err(KeyringError::NoEntry) => Ok(None),
-        Err(error) => Err(error.to_string()),
-    }
-}
-
-fn save_github_token(token: &str) -> Result<(), String> {
-    github_keyring_entry()?.set_password(token.trim()).map_err(|error| error.to_string())
-}
-
-fn delete_github_token() -> Result<(), String> {
-    match github_keyring_entry()?.delete_credential() {
-        Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
-        Err(error) => Err(error.to_string()),
-    }
-}
-
-fn load_github_session_from_keyring() -> Result<Option<GitHubAuthSession>, String> {
-    let Some(token) = load_github_token()? else {
-        return Ok(None);
-    };
-
-    match github_session_from_token(&token) {
-        Ok(session) => Ok(Some(session)),
-        Err(error) => {
-            let _ = delete_github_token();
-            Err(error)
-        }
-    }
-}
-
 fn github_session_from_token(token: &str) -> Result<GitHubAuthSession, String> {
     let client = github_http_client()?;
     let response = client
@@ -3180,6 +3885,7 @@ fn map_github_repository(repository: GitHubRepositoryApiResponse) -> GitHubRepos
         name: repository.name,
         full_name: repository.full_name,
         owner_login: repository.owner.login,
+        owner_type: repository.owner.owner_type,
         description: repository.description.unwrap_or_default(),
         private: repository.private,
         stargazer_count: repository.stargazers_count,
@@ -3487,6 +4193,26 @@ fn validate_server_input(database: &Database, input: &ServerInput) -> Result<(),
     Ok(())
 }
 
+fn validate_terminal_command_input(input: &CreateTerminalCommandInput) -> Result<(), String> {
+    if input.name.trim().is_empty() {
+        return Err("Command label is required.".to_string());
+    }
+
+    if input.command.trim().is_empty() {
+        return Err("Command text is required.".to_string());
+    }
+
+    if input.name.trim().chars().count() > 64 {
+        return Err("Command labels must be 64 characters or fewer.".to_string());
+    }
+
+    if input.command.trim().chars().count() > 4000 {
+        return Err("Commands must be 4000 characters or fewer.".to_string());
+    }
+
+    Ok(())
+}
+
 fn update_project_timestamp(connection: &Connection, project_id: &str) -> Result<(), String> {
     connection
         .execute(
@@ -3785,6 +4511,16 @@ fn sanitized_tmux_session(input: &str) -> String {
     }
 }
 
+fn sanitize_clone_directory_name(input: &str) -> String {
+    input
+        .trim()
+        .chars()
+        .filter(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
+        .collect::<String>()
+}
+
 fn expand_home_path(path: &str) -> PathBuf {
     if !path.starts_with("~/") && !path.starts_with("~\\") {
         return PathBuf::from(path);
@@ -3946,6 +4682,16 @@ fn map_server_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ServerRecord> {
         notes: row.get(13)?,
         created_at: row.get(14)?,
         updated_at: row.get(15)?,
+    })
+}
+
+fn map_terminal_command_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TerminalCommandRecord> {
+    Ok(TerminalCommandRecord {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        command: row.get(2)?,
+        created_at: row.get(3)?,
+        updated_at: row.get(4)?,
     })
 }
 

@@ -2,9 +2,11 @@ import type {
   GitHubAuthSession,
   GitHubDeviceFlowRecord,
   GitHubRepositoryRecord,
+  GitRepositoryRecord,
   KeychainItemRecord,
   ProjectRecord,
   ServerRecord,
+  TerminalCommandRecord,
   TerminalExitEvent,
   TerminalStatusEvent,
   TerminalTab,
@@ -12,8 +14,9 @@ import type {
 } from "@hermes/core";
 import { ArrowUpCircle, Laptop, Server } from "lucide-react";
 import { HostDashboard } from "../features/dashboard/HostDashboard";
-import { GitPage, type GitRepositoryView } from "../features/git/GitPage";
+import { GitPage, type GitRepositoryView, type GitToolbarContext } from "../features/git/GitPage";
 import { KeychainPage } from "../features/keychain/KeychainPage";
+import { SessionCommandRail } from "../features/sessions/SessionCommandRail";
 import { TerminalWorkspace } from "../features/tabs/TerminalWorkspace";
 import { WorkspaceHome } from "../features/workspace/WorkspaceHome";
 import type { ViewState } from "../lib/app";
@@ -30,8 +33,9 @@ type AppStageProps = {
   selectedServerId: string | null;
   filteredProjects: ProjectRecord[];
   favoriteServers: ServerRecord[];
+  servers: ServerRecord[];
   filteredKeychainItems: KeychainItemRecord[];
-  filteredGitRepositories: GitRepositoryView[];
+  gitRepositories: GitRepositoryView[];
   projectServers: ServerRecord[];
   serverCountByProject: Record<string, number>;
   tmuxLoading: boolean;
@@ -43,10 +47,12 @@ type AppStageProps = {
   gitBusyAction: string | null;
   gitHubSession: GitHubAuthSession | null;
   gitHubDeviceFlow: GitHubDeviceFlowRecord | null;
+  gitHubDeviceFlowAvailable: boolean;
   gitHubOwnedRepositories: GitHubRepositoryRecord[];
   gitHubPublicRepositories: GitHubRepositoryRecord[];
   gitHubSearchQuery: string;
-  gitHubRepositoryPane: "owned" | "search";
+  gitHubRepositoryPane: "personal" | "orgs" | "search";
+  gitHubSetupRequest: number;
   gitHubLoading: boolean;
   gitHubRepositoryLoading: boolean;
   gitHubSearchLoading: boolean;
@@ -57,12 +63,16 @@ type AppStageProps = {
   onDeleteKeychainItem: (id: string) => void;
   onRenameKeychainItem: (item: KeychainItemRecord) => void;
   onSearchChange: (value: string) => void;
+  onGitToolbarContextChange: (context: GitToolbarContext) => void;
   onCancelGitHubSignIn: () => void;
   onStartGitHubSignIn: () => void;
   onDisconnectGitHub: () => void;
+  onSignInGitHubWithToken: (token: string) => void;
+  onCloneGitHubRepository: (repository: GitHubRepositoryRecord) => void;
+  onPinRepositorySnapshot: (snapshot: GitRepositoryRecord) => void;
   onRefreshGitHubRepositories: () => void;
   onGitHubSearchQueryChange: (value: string) => void;
-  onGitHubRepositoryPaneChange: (pane: "owned" | "search") => void;
+  onGitHubRepositoryPaneChange: (pane: "personal" | "orgs" | "search") => void;
   onCopyGitHubCloneUrl: (cloneUrl: string) => void;
   onAddGitRepository: () => void;
   onSelectGitRepository: (repositoryId: string) => void;
@@ -85,6 +95,11 @@ type AppStageProps = {
   onOpenTerminalSession: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
   onInput: (sessionId: string, data: string) => void;
+  terminalCommands: TerminalCommandRecord[];
+  activeTerminalLabel: string | null;
+  onCreateTerminalCommand: (input: { name: string; command: string }) => void;
+  onDeleteTerminalCommand: (id: string) => void;
+  onRunTerminalCommand: (command: string) => void;
   onNewTab?: () => void;
   onOpenSessionLauncher?: () => void;
   localSessionPresets: Array<{
@@ -115,8 +130,9 @@ export function AppStage({
   selectedServerId,
   filteredProjects,
   favoriteServers,
+  servers,
   filteredKeychainItems,
-  filteredGitRepositories,
+  gitRepositories,
   projectServers,
   serverCountByProject,
   tmuxLoading,
@@ -128,10 +144,12 @@ export function AppStage({
   gitBusyAction,
   gitHubSession,
   gitHubDeviceFlow,
+  gitHubDeviceFlowAvailable,
   gitHubOwnedRepositories,
   gitHubPublicRepositories,
   gitHubSearchQuery,
   gitHubRepositoryPane,
+  gitHubSetupRequest,
   gitHubLoading,
   gitHubRepositoryLoading,
   gitHubSearchLoading,
@@ -142,9 +160,13 @@ export function AppStage({
   onDeleteKeychainItem,
   onRenameKeychainItem,
   onSearchChange,
+  onGitToolbarContextChange,
   onCancelGitHubSignIn,
   onStartGitHubSignIn,
   onDisconnectGitHub,
+  onSignInGitHubWithToken,
+  onCloneGitHubRepository,
+  onPinRepositorySnapshot,
   onRefreshGitHubRepositories,
   onGitHubSearchQueryChange,
   onGitHubRepositoryPaneChange,
@@ -170,6 +192,11 @@ export function AppStage({
   onOpenTerminalSession,
   onCloseTab,
   onInput,
+  terminalCommands,
+  activeTerminalLabel,
+  onCreateTerminalCommand,
+  onDeleteTerminalCommand,
+  onRunTerminalCommand,
   onNewTab,
   onOpenSessionLauncher,
   localSessionPresets,
@@ -270,6 +297,7 @@ export function AppStage({
               busyAction={gitBusyAction}
               commitMessage={gitCommitMessage}
               gitHubDeviceFlow={gitHubDeviceFlow}
+              gitHubDeviceFlowAvailable={gitHubDeviceFlowAvailable}
               gitHubLoading={gitHubLoading}
               gitHubOwnedRepositories={gitHubOwnedRepositories}
               gitHubPublicRepositories={gitHubPublicRepositories}
@@ -277,8 +305,12 @@ export function AppStage({
               gitHubRepositoryPane={gitHubRepositoryPane}
               gitHubSearchLoading={gitHubSearchLoading}
               gitHubSearchQuery={gitHubSearchQuery}
+              openGitHubSetupRequest={gitHubSetupRequest}
               gitHubSession={gitHubSession}
               loading={gitLoading}
+              localSessionPresets={localSessionPresets}
+              onToolbarContextChange={onGitToolbarContextChange}
+              onCloneRepository={onCloneGitHubRepository}
               onAddRepository={onAddGitRepository}
               onBranchNameChange={onGitBranchNameChange}
               onCheckoutBranch={onCheckoutGitBranch}
@@ -289,9 +321,12 @@ export function AppStage({
               onCopyReviewDraft={onCopyGitReviewDraft}
               onCreateBranch={onCreateGitBranch}
               onDisconnectGitHub={onDisconnectGitHub}
+              onSignInGitHubWithToken={onSignInGitHubWithToken}
               onGitHubRepositoryPaneChange={onGitHubRepositoryPaneChange}
               onGitHubSearchQueryChange={onGitHubSearchQueryChange}
               onOpenRepositoryShell={onOpenGitRepositoryShell}
+              onOpenTerminalSession={onOpenTerminalSession}
+              onPinRepositorySnapshot={onPinRepositorySnapshot}
               onPublish={onPushGitRepository}
               onRefreshGitHubRepositories={onRefreshGitHubRepositories}
               onRefreshRepositories={onRefreshGitRepositories}
@@ -299,18 +334,23 @@ export function AppStage({
               onSearchChange={onSearchChange}
               onSelectRepository={onSelectGitRepository}
               onStartGitHubSignIn={onStartGitHubSignIn}
-              repositories={filteredGitRepositories}
+              onLaunchLocalPreset={onLaunchLocalPreset}
+              repositories={gitRepositories}
               search={search}
               selectedRepositoryId={selectedGitRepositoryId}
+              tabs={tabs}
             />
           ) : (
             <HostDashboard
               favoriteServers={favoriteServers}
               onConnect={onConnect}
               onCreateProject={onCreateProject}
+              onOpenTerminalSession={onOpenTerminalSession}
               onOpenProject={onOpenProject}
               projects={filteredProjects}
+              servers={servers}
               serverCountByProject={serverCountByProject}
+              tabs={tabs}
             />
           )
         }
@@ -318,6 +358,18 @@ export function AppStage({
         onExit={onExit}
         onInput={onInput}
         onNewTab={onNewTab}
+        rightRail={
+          view === "sessions" ? (
+            <SessionCommandRail
+              activeTerminalLabel={activeTerminalLabel}
+              canRunCommands={Boolean(activeTabId && tabs.some((tab) => tab.id === activeTabId && tab.status !== "closed" && tab.status !== "error"))}
+              commands={terminalCommands}
+              onCreateCommand={onCreateTerminalCommand}
+              onDeleteCommand={onDeleteTerminalCommand}
+              onRunCommand={onRunTerminalCommand}
+            />
+          ) : null
+        }
         onResize={onResize}
         onSelectTab={onSelectTab}
         onStatus={onStatus}

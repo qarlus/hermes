@@ -16,6 +16,7 @@ interface TerminalWorkspaceProps {
   activeTabId: string | null;
   visible?: boolean;
   emptyState?: ReactNode;
+  rightRail?: ReactNode;
   emptyTabsLabel?: string | null;
   onSelectTab: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
@@ -36,6 +37,7 @@ export function TerminalWorkspace({
   activeTabId,
   visible = true,
   emptyState,
+  rightRail,
   emptyTabsLabel = "No active terminals",
   onSelectTab,
   onCloseTab,
@@ -168,53 +170,62 @@ export function TerminalWorkspace({
         </div>
       ) : null}
 
-      <div className="workspace__body">
-        {!visible || tabs.length === 0 ? (
-          emptyState ?? (
-            <div className="workspace__empty workspace__content">
-              <p>No terminal open</p>
-              <span>Open a saved server to start a tmux-aware SSH session.</span>
-            </div>
-          )
-        ) : null}
+      <div className={`workspace__body ${rightRail ? "workspace__body--with-rail" : ""}`}>
+        <div className="workspace__main">
+          {!visible || tabs.length === 0 ? (
+            emptyState ?? (
+              <div className="workspace__empty workspace__content">
+                <p>No terminal open</p>
+                <span>Open a saved server to start a tmux-aware SSH session.</span>
+              </div>
+            )
+          ) : null}
 
-        <div
-          className={`workspace__terminals ${
-            visible && tabs.length > 0 ? "" : "workspace__terminals--hidden"
-          }`}
-        >
-          {tabs.map((tab) => (
-            <TerminalPane
-              active={visible && tab.id === activeTabId}
-              key={tab.id}
-              sessionId={tab.id}
-              onInput={onInput}
-              onReady={(handle) => {
-                handlesRef.current.set(tab.id, handle);
-                const buffered = buffersRef.current.get(tab.id);
-                if (buffered?.length) {
-                  buffered.forEach((chunk) => {
-                    try {
-                      handle.terminal.write(chunk, () => {
-                        handle.terminal.scrollToBottom();
-                      });
-                    } catch (error) {
-                      console.error("buffered terminal write failed", error);
-                    }
-                  });
+          <div
+            className={`workspace__terminals ${
+              visible && tabs.length > 0 ? "" : "workspace__terminals--hidden"
+            }`}
+          >
+            {tabs.map((tab) => (
+              <TerminalPane
+                active={visible && tab.id === activeTabId}
+                key={tab.id}
+                sessionId={tab.id}
+                onInput={onInput}
+                onReady={(handle) => {
+                  handlesRef.current.set(tab.id, handle);
+                  const buffered = buffersRef.current.get(tab.id);
+                  if (buffered?.length) {
+                    buffered.forEach((chunk) => {
+                      try {
+                        handle.terminal.write(chunk, () => {
+                          handle.terminal.scrollToBottom();
+                        });
+                      } catch (error) {
+                        console.error("buffered terminal write failed", error);
+                      }
+                    });
+                    buffersRef.current.delete(tab.id);
+                  }
+                }}
+                onResize={onResize}
+                onTeardown={() => {
+                  const handle = handlesRef.current.get(tab.id);
+                  handlesRef.current.delete(tab.id);
                   buffersRef.current.delete(tab.id);
-                }
-              }}
-              onResize={onResize}
-              onTeardown={() => {
-                const handle = handlesRef.current.get(tab.id);
-                handlesRef.current.delete(tab.id);
-                buffersRef.current.delete(tab.id);
-                handle?.terminal.dispose();
-              }}
-            />
-          ))}
+                  handle?.terminal.dispose();
+                }}
+              />
+            ))}
+          </div>
         </div>
+
+        {rightRail ? (
+          <div className="workspace-sidecar">
+            <div className="workspace-sidecar__hitbox" />
+            <aside className="workspace-sidecar__panel">{rightRail}</aside>
+          </div>
+        ) : null}
       </div>
     </section>
   );

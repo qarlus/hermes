@@ -1,10 +1,22 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUpCircle, FolderPlus, KeyRound, Laptop, Server, Settings2, TerminalSquare } from "lucide-react";
+import {
+  ArrowUpCircle,
+  Copy,
+  FolderPlus,
+  Github,
+  KeyRound,
+  Laptop,
+  RefreshCcw,
+  Server,
+  Settings2,
+  TerminalSquare
+} from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   buildSshTarget,
   type CliToolUpdateRecord,
   type ConnectLocalSessionInput,
+  type CreateTerminalCommandInput,
   type CreateLocalSshKeyInput,
   defaultProjectInput,
   defaultServerInput,
@@ -20,6 +32,7 @@ import {
   type ProjectRecord,
   type ServerInput,
   type ServerRecord,
+  type TerminalCommandRecord,
   type TerminalExitEvent,
   type TerminalStatusEvent,
   type TerminalTab,
@@ -27,20 +40,24 @@ import {
 } from "@hermes/core";
 import {
   closeSession,
+  cloneGitRepository,
   commitGitRepository,
   connectSession,
   connectLocalSession,
   checkoutGitBranch,
+  createTerminalCommand,
   createGitBranch,
   createLocalSshKey,
   createKeychainItem,
   createProject,
   createServer,
+  deleteTerminalCommand,
   deleteKeychainItem,
   deleteProject,
   deleteServer,
   disconnectGitHub,
   getGitHubSession,
+  isGitHubDeviceFlowAvailable,
   getDefaultSshDirectory,
   getCliToolUpdate,
   getKeychainPublicKey,
@@ -49,6 +66,7 @@ import {
   listKeychainItems,
   listInstalledCliTools,
   listProjects,
+  listTerminalCommands,
   listSessionStatuses,
   listServers,
   listTmuxSessions,
@@ -57,6 +75,7 @@ import {
   resizeSession,
   runCliToolUpdate,
   searchGitHubRepositories,
+  signInGitHubWithToken,
   startGitHubDeviceFlow,
   updateKeychainItemName,
   updateProject,
@@ -68,7 +87,7 @@ import { AppDialogs } from "./components/AppDialogs";
 import { AppHeader } from "./components/AppHeader";
 import { AppRail } from "./components/AppRail";
 import { AppStage } from "./components/AppStage";
-import type { GitRepositoryView } from "./features/git/GitPage";
+import type { GitRepositoryView, GitToolbarContext } from "./features/git/GitPage";
 import { LocalSessionPresetEditor } from "./features/sessions/LocalSessionPresetEditor";
 import { SessionLauncher } from "./features/sessions/SessionLauncher";
 import { ToolUpdatesPanel } from "./features/sessions/ToolUpdatesPanel";
@@ -86,7 +105,20 @@ import { useBufferedTerminalInput } from "./lib/useBufferedTerminalInput";
 
 const LOCAL_SESSION_PRESETS_KEY = "hermes.localSessionPresets";
 const LOCAL_GIT_REPOSITORIES_KEY = "hermes.localGitRepositories";
+const LOCAL_TERMINAL_COMMANDS_KEY = "hermes.terminalCommands";
+const GITHUB_OWNED_REPOSITORIES_CACHE_KEY = "hermes.githubOwnedRepositories";
+const GITHUB_OWNED_REPOSITORIES_CACHE_TTL_MS = 5 * 60 * 1000;
 const TOAST_DURATION_MS = 2800;
+const EMPTY_GIT_TOOLBAR_CONTEXT: GitToolbarContext = {
+  cloneUrl: null,
+  shellRepositoryId: null,
+  reviewRepositoryId: null,
+  headerEyebrow: null,
+  headerTitle: null,
+  headerSubtitle: null,
+  headerMeta: [],
+  onBack: null
+};
 
 type LocalSessionPreset = {
   id: string;
@@ -100,13 +132,19 @@ type LocalGitRepository = {
   path: string;
 };
 
+type GitHubOwnedRepositoriesCache = {
+  login: string;
+  updatedAt: number;
+  repositories: GitHubRepositoryRecord[];
+};
+
 type GitRepositoryState = {
   id: string;
   snapshot: GitRepositoryRecord | null;
   error: string | null;
 };
 
-type GitHubRepositoryPane = "owned" | "search";
+type GitHubRepositoryPane = "personal" | "orgs" | "search";
 
 type ToastTone = "info" | "success" | "error";
 
@@ -149,6 +187,9 @@ export function App() {
   const [localSessionPresets, setLocalSessionPresets] = useState<LocalSessionPreset[]>(() =>
     loadLocalSessionPresets()
   );
+  const [terminalCommands, setTerminalCommands] = useState<TerminalCommandRecord[]>(() =>
+    loadLocalTerminalCommands()
+  );
   const [localGitRepositories, setLocalGitRepositories] = useState<LocalGitRepository[]>(() =>
     loadLocalGitRepositories()
   );
@@ -160,13 +201,18 @@ export function App() {
   const [gitBranchName, setGitBranchName] = useState("");
   const [gitHubSession, setGitHubSession] = useState<GitHubAuthSession | null>(null);
   const [gitHubDeviceFlow, setGitHubDeviceFlow] = useState<GitHubDeviceFlowRecord | null>(null);
-  const [gitHubOwnedRepositories, setGitHubOwnedRepositories] = useState<GitHubRepositoryRecord[]>([]);
+  const [gitHubOwnedRepositories, setGitHubOwnedRepositories] = useState<GitHubRepositoryRecord[]>(() =>
+    loadGitHubOwnedRepositoriesCache()?.repositories ?? []
+  );
   const [gitHubPublicRepositories, setGitHubPublicRepositories] = useState<GitHubRepositoryRecord[]>([]);
   const [gitHubSearchQuery, setGitHubSearchQuery] = useState("");
-  const [gitHubRepositoryPane, setGitHubRepositoryPane] = useState<GitHubRepositoryPane>("owned");
+  const [gitHubRepositoryPane, setGitHubRepositoryPane] = useState<GitHubRepositoryPane>("personal");
   const [gitHubLoading, setGitHubLoading] = useState(false);
   const [gitHubRepositoryLoading, setGitHubRepositoryLoading] = useState(false);
   const [gitHubSearchLoading, setGitHubSearchLoading] = useState(false);
+  const [gitHubDeviceFlowAvailable, setGitHubDeviceFlowAvailable] = useState(false);
+  const [gitHubSetupRequest, setGitHubSetupRequest] = useState(0);
+  const [gitToolbarContext, setGitToolbarContext] = useState<GitToolbarContext>(EMPTY_GIT_TOOLBAR_CONTEXT);
   const [localSessionPresetEditorOpen, setLocalSessionPresetEditorOpen] = useState(false);
   const [localSessionPresetName, setLocalSessionPresetName] = useState("");
   const [localSessionPresetPath, setLocalSessionPresetPath] = useState("");
@@ -197,6 +243,10 @@ export function App() {
   const activeTabServer = useMemo(
     () => servers.find((server) => server.id === activeTab?.serverId) ?? null,
     [activeTab?.serverId, servers]
+  );
+  const activeTerminalLabel = useMemo(
+    () => (activeTabServer ? buildSshTarget(activeTabServer) : activeTab?.title ?? null),
+    [activeTab?.title, activeTabServer]
   );
 
   const serverCountByProject = useMemo(() => {
@@ -388,6 +438,14 @@ export function App() {
   }, [localSessionPresets]);
 
   useEffect(() => {
+    if (isTauriRuntime()) {
+      return;
+    }
+
+    persistLocalTerminalCommands(terminalCommands);
+  }, [terminalCommands]);
+
+  useEffect(() => {
     persistLocalGitRepositories(localGitRepositories);
   }, [localGitRepositories]);
 
@@ -426,16 +484,27 @@ export function App() {
       return;
     }
 
+    void loadSavedTerminalCommands();
     void loadGitHubSessionState();
+    void loadGitHubAuthSupport();
   }, []);
 
   useEffect(() => {
-    if (view !== "git" || !gitHubSession) {
+    if (!gitHubSession) {
+      setGitHubOwnedRepositories([]);
       return;
     }
 
-    void loadGitHubOwnedRepositories();
-  }, [gitHubSession, view]);
+    const cached = loadGitHubOwnedRepositoriesCache();
+    if (cached?.login === gitHubSession.login) {
+      setGitHubOwnedRepositories(cached.repositories);
+      if (Date.now() - cached.updatedAt < GITHUB_OWNED_REPOSITORIES_CACHE_TTL_MS) {
+        return;
+      }
+    }
+
+    void loadGitHubOwnedRepositories(gitHubSession);
+  }, [gitHubSession]);
 
   useEffect(() => {
     if (view !== "git") {
@@ -634,6 +703,20 @@ export function App() {
       setTmuxSessions([]);
     } finally {
       setTmuxLoading(false);
+    }
+  };
+
+  const loadSavedTerminalCommands = async () => {
+    if (!isTauriRuntime()) {
+      setTerminalCommands(loadLocalTerminalCommands());
+      return;
+    }
+
+    try {
+      const saved = await listTerminalCommands();
+      setTerminalCommands(saved);
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
     }
   };
 
@@ -1023,6 +1106,64 @@ export function App() {
     pushToast(`Saved local path ${name}.`, "success");
   };
 
+  const handleCreateTerminalCommand = async (input: CreateTerminalCommandInput) => {
+    const name = input.name.trim();
+    const command = input.command.trim();
+    if (!name || !command) {
+      pushToast("Quick commands need both a label and command text.", "error");
+      return;
+    }
+
+    try {
+      if (!isTauriRuntime()) {
+        const saved: TerminalCommandRecord = {
+          id: crypto.randomUUID(),
+          name,
+          command,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        setTerminalCommands((current) => [saved, ...current]);
+        pushToast(`Saved quick command ${name}.`, "success");
+        return;
+      }
+
+      const saved = await createTerminalCommand({ name, command });
+      setTerminalCommands((current) => [saved, ...current.filter((candidate) => candidate.id !== saved.id)]);
+      pushToast(`Saved quick command ${saved.name}.`, "success");
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
+    }
+  };
+
+  const handleDeleteTerminalCommand = async (id: string) => {
+    const target = terminalCommands.find((command) => command.id === id);
+    try {
+      if (!isTauriRuntime()) {
+        setTerminalCommands((current) => current.filter((command) => command.id !== id));
+        return;
+      }
+
+      await deleteTerminalCommand(id);
+      setTerminalCommands((current) => current.filter((command) => command.id !== id));
+      if (target) {
+        pushToast(`Removed quick command ${target.name}.`, "success");
+      }
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
+    }
+  };
+
+  const handleRunTerminalCommand = (command: string) => {
+    const targetTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
+    if (!targetTab || targetTab.status === "closed" || targetTab.status === "error") {
+      pushToast("Open an active terminal before running a saved command.", "info");
+      return;
+    }
+
+    queueTerminalInput(targetTab.id, normalizeTerminalCommandInput(command));
+  };
+
   const handleLaunchLocalPreset = async (presetId: string) => {
     const preset = localSessionPresets.find((candidate) => candidate.id === presetId);
     if (!preset) {
@@ -1037,6 +1178,39 @@ export function App() {
 
   const handleRemoveLocalPreset = (presetId: string) => {
     setLocalSessionPresets((current) => current.filter((preset) => preset.id !== presetId));
+  };
+
+  const pinGitRepositorySnapshot = (snapshot: GitRepositoryRecord) => {
+    const existingRepository = localGitRepositories.find(
+      (repository) => repository.path === snapshot.rootPath
+    );
+
+    if (existingRepository) {
+      syncGitRepositorySnapshot(existingRepository.id, snapshot);
+      return {
+        alreadyPinned: true,
+        repositoryId: existingRepository.id
+      };
+    }
+
+    const repositoryId = crypto.randomUUID();
+    setLocalGitRepositories((current) => [
+      {
+        id: repositoryId,
+        name: snapshot.name,
+        path: snapshot.rootPath
+      },
+      ...current
+    ]);
+    setGitRepositoryStates((current) => [
+      ...current.filter((repository) => repository.id !== repositoryId),
+      { id: repositoryId, snapshot, error: null }
+    ]);
+
+    return {
+      alreadyPinned: false,
+      repositoryId
+    };
   };
 
   const syncGitRepositorySnapshot = (repositoryId: string, snapshot: GitRepositoryRecord) => {
@@ -1134,6 +1308,20 @@ export function App() {
     }
   };
 
+  const loadGitHubAuthSupport = async () => {
+    if (!isTauriRuntime()) {
+      setGitHubDeviceFlowAvailable(false);
+      return;
+    }
+
+    try {
+      const available = await isGitHubDeviceFlowAvailable();
+      setGitHubDeviceFlowAvailable(available);
+    } catch {
+      setGitHubDeviceFlowAvailable(false);
+    }
+  };
+
   const loadGitHubOwnedRepositories = async (sessionOverride?: GitHubAuthSession | null) => {
     const activeSession = sessionOverride ?? gitHubSession;
     if (!isTauriRuntime() || !activeSession) {
@@ -1145,6 +1333,11 @@ export function App() {
     try {
       const repositories = await listGitHubRepositories();
       setGitHubOwnedRepositories(repositories);
+      persistGitHubOwnedRepositoriesCache({
+        login: activeSession.login,
+        repositories,
+        updatedAt: Date.now()
+      });
     } catch (error) {
       pushToast(getErrorMessage(error), "error");
     } finally {
@@ -1182,6 +1375,27 @@ export function App() {
     }
   };
 
+  const handleSignInGitHubWithToken = async (token: string) => {
+    if (!isTauriRuntime()) {
+      pushToast("GitHub auth is only available in the desktop app.", "info");
+      return;
+    }
+
+    setGitHubLoading(true);
+    try {
+      const session = await signInGitHubWithToken(token);
+      setGitHubSession(session);
+      setGitHubDeviceFlow(null);
+      setGitHubRepositoryPane("personal");
+      pushToast(`Connected GitHub as ${session.login}.`, "success");
+      await loadGitHubOwnedRepositories(session);
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
+    } finally {
+      setGitHubLoading(false);
+    }
+  };
+
   const handleDisconnectGitHub = async () => {
     setGitHubLoading(true);
     try {
@@ -1189,6 +1403,7 @@ export function App() {
       setGitHubSession(null);
       setGitHubOwnedRepositories([]);
       setGitHubDeviceFlow(null);
+      setGitHubRepositoryPane("personal");
       pushToast("Disconnected GitHub.", "success");
     } catch (error) {
       pushToast(getErrorMessage(error), "error");
@@ -1229,39 +1444,53 @@ export function App() {
       }
 
       const snapshot = await inspectGitRepository(selection);
-      const existingRepository = localGitRepositories.find(
-        (repository) => repository.path === snapshot.rootPath
-      );
-
-      if (existingRepository) {
-        syncGitRepositorySnapshot(existingRepository.id, snapshot);
-        setSelectedGitRepositoryId(existingRepository.id);
-        setView("git");
-        pushToast(`${snapshot.name} is already pinned in Git.`, "info");
-        return;
-      }
-
-      const repositoryId = crypto.randomUUID();
-      setLocalGitRepositories((current) => [
-        {
-          id: repositoryId,
-          name: snapshot.name,
-          path: snapshot.rootPath
-        },
-        ...current
-      ]);
-      setGitRepositoryStates((current) => [
-        ...current.filter((repository) => repository.id !== repositoryId),
-        { id: repositoryId, snapshot, error: null }
-      ]);
-      setSelectedGitRepositoryId(repositoryId);
+      const result = pinGitRepositorySnapshot(snapshot);
+      setSelectedGitRepositoryId(result.repositoryId);
       setView("git");
-      pushToast(`Pinned ${snapshot.name} in Git.`, "success");
+      pushToast(
+        result.alreadyPinned ? `${snapshot.name} is already pinned in Git.` : `Pinned ${snapshot.name} in Git.`,
+        result.alreadyPinned ? "info" : "success"
+      );
     } catch (error) {
       pushToast(getErrorMessage(error), "error");
     } finally {
       setGitBusyAction(null);
     }
+  };
+
+  const handleCloneGitHubRepository = async (repository: GitHubRepositoryRecord) => {
+    if (!isTauriRuntime()) {
+      pushToast("Git controls are only available in the desktop app.", "info");
+      return;
+    }
+
+    setGitBusyAction(`clone:${repository.id}`);
+    try {
+      const selection = await open({
+        directory: true,
+        multiple: false,
+        title: `Choose a parent folder for ${repository.fullName}`
+      });
+
+      if (typeof selection !== "string") {
+        return;
+      }
+
+      const snapshot = await cloneGitRepository(repository.cloneUrl, selection, repository.name);
+      const result = pinGitRepositorySnapshot(snapshot);
+      setSelectedGitRepositoryId(result.repositoryId);
+      setView("git");
+      pushToast(`Cloned ${repository.fullName}.`, "success");
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
+    } finally {
+      setGitBusyAction(null);
+    }
+  };
+
+  const handlePinGitRepositorySnapshot = (snapshot: GitRepositoryRecord) => {
+    const result = pinGitRepositorySnapshot(snapshot);
+    setSelectedGitRepositoryId(result.repositoryId);
   };
 
   const handleRemoveGitRepository = (repositoryId: string) => {
@@ -1608,10 +1837,12 @@ export function App() {
   const headerTitle =
     view === "workspace" && selectedProject
       ? projectDisplayLabel(selectedProject)
+      : view === "git" && gitToolbarContext.headerTitle
+        ? gitToolbarContext.headerTitle
       : view === "sessions"
         ? "Sessions"
       : view === "git"
-        ? selectedGitRepository?.snapshot?.name ?? selectedGitRepository?.name ?? "Git"
+        ? "Git"
       : view === "keychain"
         ? "Keychain"
         : "Dashboard";
@@ -1625,14 +1856,14 @@ export function App() {
       ? `${buildSshTarget(selectedServer)} / port ${selectedServer.port}${selectedServer.useTmux ? ` / tmux ${selectedServer.tmuxSession}` : ""}`
       : view === "workspace"
         ? "Servers, live sessions, and tmux reconnects"
+        : view === "git" && gitToolbarContext.headerTitle
+          ? gitToolbarContext.headerSubtitle ?? ""
         : view === "git"
-          ? selectedGitRepository?.snapshot
-            ? `${filteredGitRepositories.length} repo${filteredGitRepositories.length === 1 ? "" : "s"} / ${selectedGitRepository.snapshot.branch} / ${selectedGitRepository.snapshot.changes.length} pending file${selectedGitRepository.snapshot.changes.length === 1 ? "" : "s"}`
+          ? gitHubSession
+            ? `${filteredGitRepositories.length} local repo${filteredGitRepositories.length === 1 ? "" : "s"} pinned / ${gitHubOwnedRepositories.length} GitHub repo${gitHubOwnedRepositories.length === 1 ? "" : "s"} available`
             : filteredGitRepositories.length === 0
-              ? gitHubSession
-                ? `GitHub connected as ${gitHubSession.login} / ${gitHubOwnedRepositories.length} remote repo${gitHubOwnedRepositories.length === 1 ? "" : "s"}`
-                : "Connect GitHub, browse public repos, and pin local checkouts."
-              : `${filteredGitRepositories.length} repo${filteredGitRepositories.length === 1 ? "" : "s"} pinned locally.`
+              ? "Connect GitHub or skip to a local checkout."
+              : `${filteredGitRepositories.length} local repo${filteredGitRepositories.length === 1 ? "" : "s"} pinned.`
         : view === "keychain"
           ? `${filteredKeychainItems.length} saved credential${filteredKeychainItems.length === 1 ? "" : "s"}`
           : loading
@@ -1666,6 +1897,10 @@ export function App() {
       <section className="main-panel main-panel--full">
         <AppHeader
           canEditWorkspace={Boolean(selectedProject)}
+          eyebrow={view === "git" ? gitToolbarContext.headerEyebrow ?? undefined : undefined}
+          backLabel="Repositories"
+          meta={view === "git" ? gitToolbarContext.headerMeta : undefined}
+          onBack={view === "git" ? gitToolbarContext.onBack ?? undefined : undefined}
           onBackToDashboard={() => {
             if (view === "workspace" && workspaceMode === "terminal") {
               setWorkspaceMode("home");
@@ -1781,18 +2016,98 @@ export function App() {
               </button>
             </div>
           </div>
+        ) : view === "git" ? (
+          <div className="main-panel__quick-actions">
+            <div className="main-panel__quick-actions-row">
+              <button
+                className="quick-action-chip quick-action-chip--primary"
+                onClick={() => void handleAddGitRepository()}
+                type="button"
+              >
+                <FolderPlus size={14} />
+                Pin checkout
+              </button>
+              <button
+                className="quick-action-chip"
+                disabled={gitLoading}
+                onClick={() => void refreshGitRepositories()}
+                type="button"
+              >
+                <RefreshCcw size={14} />
+                Refresh local
+              </button>
+              {gitToolbarContext.shellRepositoryId ? (
+                <button
+                  className="quick-action-chip"
+                  disabled={gitBusyAction === `shell:${gitToolbarContext.shellRepositoryId}`}
+                  onClick={() => void handleOpenGitRepositoryShell(gitToolbarContext.shellRepositoryId!)}
+                  type="button"
+                >
+                  <TerminalSquare size={14} />
+                  {gitBusyAction === `shell:${gitToolbarContext.shellRepositoryId}` ? "Opening..." : "Open shell"}
+                </button>
+              ) : null}
+              {gitToolbarContext.reviewRepositoryId ? (
+                <button
+                  className="quick-action-chip"
+                  onClick={() => void handleCopyGitReviewDraft(gitToolbarContext.reviewRepositoryId!)}
+                  type="button"
+                >
+                  <Copy size={14} />
+                  Copy review
+                </button>
+              ) : null}
+              {gitToolbarContext.cloneUrl ? (
+                <button
+                  className="quick-action-chip"
+                  onClick={() => void handleCopyGitHubCloneUrl(gitToolbarContext.cloneUrl!)}
+                  type="button"
+                >
+                  <Copy size={14} />
+                  Copy clone URL
+                </button>
+              ) : null}
+              {gitHubSession ? (
+                <>
+                  <button
+                    className="quick-action-chip"
+                    disabled={gitHubLoading || gitHubRepositoryLoading}
+                    onClick={() => void loadGitHubOwnedRepositories()}
+                    type="button"
+                  >
+                    <RefreshCcw size={14} />
+                    Refresh GitHub
+                  </button>
+                  <button className="quick-action-chip" onClick={() => void handleDisconnectGitHub()} type="button">
+                    <Github size={14} />
+                    Disconnect GitHub
+                  </button>
+                </>
+              ) : (
+                <button
+                  className="quick-action-chip"
+                  onClick={() => setGitHubSetupRequest((current) => current + 1)}
+                  type="button"
+                >
+                  <Github size={14} />
+                  Connect GitHub
+                </button>
+              )}
+            </div>
+          </div>
         ) : null}
 
         <AppStage
           activeTabId={activeTabId}
           favoriteServers={favoriteServers}
-          filteredGitRepositories={filteredGitRepositories}
+          gitRepositories={gitRepositories}
           filteredKeychainItems={filteredKeychainItems}
           filteredProjects={filteredProjects}
           gitBranchName={gitBranchName}
           gitBusyAction={gitBusyAction}
           gitCommitMessage={gitCommitMessage}
           gitHubDeviceFlow={gitHubDeviceFlow}
+          gitHubDeviceFlowAvailable={gitHubDeviceFlowAvailable}
           gitHubLoading={gitHubLoading}
           gitHubOwnedRepositories={gitHubOwnedRepositories}
           gitHubPublicRepositories={gitHubPublicRepositories}
@@ -1800,6 +2115,7 @@ export function App() {
           gitHubRepositoryPane={gitHubRepositoryPane}
           gitHubSearchLoading={gitHubSearchLoading}
           gitHubSearchQuery={gitHubSearchQuery}
+          gitHubSetupRequest={gitHubSetupRequest}
           gitHubSession={gitHubSession}
           gitLoading={gitLoading}
           onAddGitRepository={() => void handleAddGitRepository()}
@@ -1810,6 +2126,8 @@ export function App() {
           onCommitGitRepository={(repositoryId) => void handleCommitGitRepository(repositoryId)}
           onConnect={(serverId, tmuxSession) => void handleConnect(serverId, tmuxSession)}
           onCancelGitHubSignIn={handleCancelGitHubSignIn}
+          onCloneGitHubRepository={(repository) => void handleCloneGitHubRepository(repository)}
+          onPinRepositorySnapshot={handlePinGitRepositorySnapshot}
           onCopyGitHubCloneUrl={(cloneUrl) => void handleCopyGitHubCloneUrl(cloneUrl)}
           onCopyGitReviewDraft={(repositoryId) => void handleCopyGitReviewDraft(repositoryId)}
           onCreateProject={openCreateProject}
@@ -1820,12 +2138,17 @@ export function App() {
           onDeleteKeychainItem={(id) => void handleDeleteKeychainItem(id)}
           onEditServer={openEditServerById}
           onExit={handleExit}
+          activeTerminalLabel={activeTerminalLabel}
           onGitBranchNameChange={setGitBranchName}
           onGitCommitMessageChange={setGitCommitMessage}
+          onGitToolbarContextChange={setGitToolbarContext}
           onGitHubRepositoryPaneChange={setGitHubRepositoryPane}
           onGitHubSearchQueryChange={setGitHubSearchQuery}
+          onCreateTerminalCommand={(input) => void handleCreateTerminalCommand(input)}
+          onDeleteTerminalCommand={(id) => void handleDeleteTerminalCommand(id)}
           onInput={queueTerminalInput}
           onDisconnectGitHub={() => void handleDisconnectGitHub()}
+          onSignInGitHubWithToken={(token) => void handleSignInGitHubWithToken(token)}
           onNewTab={view === "sessions" ? () => setSessionLauncherOpen(true) : tabs.length > 0 ? () => void handleOpenSiblingTab() : undefined}
           onOpenGitRepositoryShell={(repositoryId) => void handleOpenGitRepositoryShell(repositoryId)}
           localSessionPresets={localSessionPresets}
@@ -1840,6 +2163,7 @@ export function App() {
           onRefreshGitRepositories={() => void refreshGitRepositories()}
           onRemoveGitRepository={handleRemoveGitRepository}
           onRemoveLocalPreset={handleRemoveLocalPreset}
+          onRunTerminalCommand={handleRunTerminalCommand}
           onRenameKeychainItem={(item) => {
             setCreatingKeychainItem(false);
             setCreatingLocalSshKey(false);
@@ -1864,9 +2188,11 @@ export function App() {
           selectedProject={selectedProject}
           selectedServer={selectedServer}
           selectedServerId={selectedServerId}
+          servers={servers}
           serverCountByProject={serverCountByProject}
           stageClassName={`stage stage--solo ${view === "dashboard" ? "stage--dashboard" : ""}`}
           tabs={tabs}
+          terminalCommands={terminalCommands}
           tmuxLoading={tmuxLoading}
           tmuxSessions={tmuxSessions}
           view={view}
@@ -2002,6 +2328,28 @@ function loadLocalSessionPresets(): LocalSessionPreset[] {
   }
 }
 
+function loadLocalTerminalCommands(): TerminalCommandRecord[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const raw = window.localStorage.getItem(LOCAL_TERMINAL_COMMANDS_KEY);
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.filter(isTerminalCommandRecord);
+  } catch {
+    return [];
+  }
+}
+
 function loadLocalGitRepositories(): LocalGitRepository[] {
   if (typeof window === "undefined") {
     return [];
@@ -2024,6 +2372,36 @@ function loadLocalGitRepositories(): LocalGitRepository[] {
   }
 }
 
+function loadGitHubOwnedRepositoriesCache(): GitHubOwnedRepositoriesCache | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(GITHUB_OWNED_REPOSITORIES_CACHE_KEY);
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw) as Partial<GitHubOwnedRepositoriesCache>;
+    if (
+      typeof parsed?.login !== "string" ||
+      typeof parsed?.updatedAt !== "number" ||
+      !Array.isArray(parsed?.repositories)
+    ) {
+      return null;
+    }
+
+    return {
+      login: parsed.login,
+      updatedAt: parsed.updatedAt,
+      repositories: parsed.repositories.filter(isGitHubRepositoryRecord)
+    };
+  } catch {
+    return null;
+  }
+}
+
 function persistLocalSessionPresets(presets: LocalSessionPreset[]) {
   if (typeof window === "undefined") {
     return;
@@ -2032,12 +2410,28 @@ function persistLocalSessionPresets(presets: LocalSessionPreset[]) {
   window.localStorage.setItem(LOCAL_SESSION_PRESETS_KEY, JSON.stringify(presets));
 }
 
+function persistLocalTerminalCommands(commands: TerminalCommandRecord[]) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(LOCAL_TERMINAL_COMMANDS_KEY, JSON.stringify(commands));
+}
+
 function persistLocalGitRepositories(repositories: LocalGitRepository[]) {
   if (typeof window === "undefined") {
     return;
   }
 
   window.localStorage.setItem(LOCAL_GIT_REPOSITORIES_KEY, JSON.stringify(repositories));
+}
+
+function persistGitHubOwnedRepositoriesCache(cache: GitHubOwnedRepositoriesCache) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(GITHUB_OWNED_REPOSITORIES_CACHE_KEY, JSON.stringify(cache));
 }
 
 function isLocalSessionPreset(value: unknown): value is LocalSessionPreset {
@@ -2063,6 +2457,44 @@ function isLocalGitRepository(value: unknown): value is LocalGitRepository {
     typeof candidate.id === "string" &&
     typeof candidate.name === "string" &&
     typeof candidate.path === "string"
+  );
+}
+
+function isTerminalCommandRecord(value: unknown): value is TerminalCommandRecord {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.id === "string" &&
+    typeof candidate.name === "string" &&
+    typeof candidate.command === "string" &&
+    typeof candidate.createdAt === "string" &&
+    typeof candidate.updatedAt === "string"
+  );
+}
+
+function isGitHubRepositoryRecord(value: unknown): value is GitHubRepositoryRecord {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.id === "string" &&
+    typeof candidate.name === "string" &&
+    typeof candidate.fullName === "string" &&
+    typeof candidate.ownerLogin === "string" &&
+    typeof candidate.ownerType === "string" &&
+    typeof candidate.description === "string" &&
+    typeof candidate.private === "boolean" &&
+    typeof candidate.stargazerCount === "number" &&
+    (typeof candidate.language === "string" || candidate.language === null) &&
+    typeof candidate.updatedAt === "string" &&
+    typeof candidate.htmlUrl === "string" &&
+    typeof candidate.cloneUrl === "string" &&
+    typeof candidate.defaultBranch === "string"
   );
 }
 
@@ -2092,6 +2524,11 @@ function buildGitReviewDraft(repository: GitRepositoryRecord) {
     "## Working tree",
     changes || "- Working tree is clean"
   ].join("\n");
+}
+
+function normalizeTerminalCommandInput(command: string) {
+  const withoutTrailingBreaks = command.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n+$/u, "");
+  return `${withoutTrailingBreaks.replace(/\n/g, "\r")}\r`;
 }
 
 function mergeTerminalStatus(

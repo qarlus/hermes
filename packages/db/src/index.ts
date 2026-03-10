@@ -3,6 +3,7 @@ import type {
   CliToolUpdateRecord,
   ConnectLocalSessionInput,
   ConnectSessionInput,
+  CreateTerminalCommandInput,
   CreateLocalSshKeyInput,
   GitHubAuthSession,
   GitHubDeviceFlowRecord,
@@ -15,6 +16,7 @@ import type {
   SessionStatusSnapshot,
   ServerInput,
   ServerRecord,
+  TerminalCommandRecord,
   TmuxSessionRecord,
   TerminalTab
 } from "@hermes/core";
@@ -68,8 +70,37 @@ export const connectSession = (input: ConnectSessionInput) =>
 export const connectLocalSession = (input?: ConnectLocalSessionInput) =>
   invoke<TerminalTab>("connect_local_session", input ? { input } : {});
 
+export const listTerminalCommands = () =>
+  invoke<TerminalCommandRecord[]>("list_terminal_commands");
+
+export const createTerminalCommand = (input: CreateTerminalCommandInput) =>
+  invoke<TerminalCommandRecord>("create_terminal_command", { input });
+
+export const deleteTerminalCommand = (id: string) =>
+  invoke<void>("delete_terminal_command", { id });
+
 export const inspectGitRepository = (path: string) =>
   invoke<GitRepositoryRecord>("inspect_git_repository", { path });
+
+export const getGitRepositoryChangeDiff = (path: string, filePath: string) =>
+  invoke<string>("get_git_repository_change_diff", { path, filePath });
+
+export const cloneGitRepository = (
+  cloneUrl: string,
+  parentDirectory: string,
+  directoryName: string
+) =>
+  invoke<GitRepositoryRecord>("clone_git_repository", {
+    cloneUrl,
+    parentDirectory,
+    directoryName
+  });
+
+export const findLocalGitHubCheckouts = (repositoryFullName: string, repositoryName: string) =>
+  invoke<GitRepositoryRecord[]>("find_local_github_checkouts", {
+    repositoryFullName,
+    repositoryName
+  });
 
 export const commitGitRepository = (path: string, message: string) =>
   invoke<GitRepositoryRecord>("commit_git_repository", { path, message });
@@ -86,11 +117,17 @@ export const checkoutGitBranch = (path: string, name: string) =>
 export const getGitHubSession = () =>
   invoke<GitHubAuthSession | null>("get_github_session");
 
+export const isGitHubDeviceFlowAvailable = () =>
+  invoke<boolean>("is_github_device_flow_available");
+
 export const startGitHubDeviceFlow = () =>
   invoke<GitHubDeviceFlowRecord>("start_github_device_flow");
 
 export const pollGitHubDeviceFlow = () =>
   invoke<GitHubAuthSession | null>("poll_github_device_flow");
+
+export const signInGitHubWithToken = (token: string) =>
+  invoke<GitHubAuthSession>("sign_in_github_with_token", { token });
 
 export const disconnectGitHub = () => invoke<void>("disconnect_github");
 

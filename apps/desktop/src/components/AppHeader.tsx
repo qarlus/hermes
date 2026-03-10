@@ -3,48 +3,73 @@ import type { ViewState } from "../lib/app";
 
 type AppHeaderProps = {
   view: ViewState;
+  eyebrow?: string;
   title: string;
   subtitle: string;
+  meta?: string[];
   search: string;
   onSearchChange: (value: string) => void;
   onCreateWorkspace: () => void;
   onBackToDashboard: () => void;
   onEditWorkspace: () => void;
   canEditWorkspace: boolean;
+  onBack?: () => void;
+  backLabel?: string;
 };
 
 export function AppHeader({
   view,
+  eyebrow,
   title,
   subtitle,
+  meta = [],
   search,
   onSearchChange,
   onCreateWorkspace,
   onBackToDashboard,
   onEditWorkspace,
-  canEditWorkspace
+  canEditWorkspace,
+  onBack,
+  backLabel = "Back"
 }: AppHeaderProps) {
   return (
     <header className="main-panel__header">
       <div className="main-panel__heading">
         <p className="eyebrow">
-          {view === "workspace"
-            ? "Workspace"
-            : view === "sessions"
-              ? "Sessions"
-              : view === "keychain"
-                ? "Secrets"
-                : view === "git"
-                  ? "Git"
-                : "Dashboard"}
+          {eyebrow ??
+            (view === "workspace"
+              ? "Workspace"
+              : view === "sessions"
+                ? "Sessions"
+                : view === "keychain"
+                  ? "Secrets"
+                  : view === "git"
+                    ? "Git"
+                    : "Dashboard")}
         </p>
         <h2>{title}</h2>
         <span>{subtitle}</span>
+        {meta.length > 0 ? (
+          <div className="main-panel__meta">
+            {meta.map((item) => (
+              <span className="git-pill" key={item}>
+                {item}
+              </span>
+            ))}
+          </div>
+        ) : null}
       </div>
 
       <div
         className={`main-panel__actions ${view !== "workspace" ? "main-panel__actions--dashboard" : ""}`}
       >
+        {view === "git" && onBack ? (
+          <button className="ghost-button" onClick={onBack} type="button">
+            <ArrowLeft size={14} />
+            {backLabel}
+          </button>
+        ) : null}
+
         {view === "dashboard" ? (
           <div className="dashboard-toolbar">
             <label className="dashboard-search">

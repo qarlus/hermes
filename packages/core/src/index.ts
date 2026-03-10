@@ -63,6 +63,7 @@ export interface TerminalTab {
   title: string;
   status: "connecting" | "connected" | "closed" | "error";
   startedAt: string;
+  cwd: string | null;
 }
 
 export interface ConnectSessionInput {
@@ -73,6 +74,19 @@ export interface ConnectSessionInput {
 export interface ConnectLocalSessionInput {
   cwd?: string;
   label?: string;
+}
+
+export interface TerminalCommandRecord {
+  id: string;
+  name: string;
+  command: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateTerminalCommandInput {
+  name: string;
+  command: string;
 }
 
 export type CliToolUpdateState =
@@ -157,6 +171,12 @@ export interface GitBranchRecord {
   upstream: string | null;
 }
 
+export interface GitRemoteRecord {
+  name: string;
+  fetchUrl: string;
+  pushUrl: string;
+}
+
 export interface GitReviewRecord {
   baseBranch: string;
   commitCount: number;
@@ -170,6 +190,7 @@ export interface GitRepositoryRecord {
   upstream: string | null;
   hasRemote: boolean;
   remoteName: string | null;
+  remotes: GitRemoteRecord[];
   ahead: number;
   behind: number;
   stagedCount: number;
@@ -204,6 +225,7 @@ export interface GitHubRepositoryRecord {
   name: string;
   fullName: string;
   ownerLogin: string;
+  ownerType: string;
   description: string;
   private: boolean;
   stargazerCount: number;
