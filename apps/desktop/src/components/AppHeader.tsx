@@ -45,6 +45,8 @@ export function AppHeader({
                   ? "Secrets"
                   : view === "git"
                     ? "Git"
+                    : view === "files"
+                      ? "Files"
                     : "Dashboard")}
         </p>
         <h2>{title}</h2>

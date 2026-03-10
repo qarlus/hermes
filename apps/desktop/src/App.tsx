@@ -1843,6 +1843,8 @@ export function App() {
         ? "Sessions"
       : view === "git"
         ? "Git"
+      : view === "files"
+        ? "Files"
       : view === "keychain"
         ? "Keychain"
         : "Dashboard";
@@ -1864,6 +1866,8 @@ export function App() {
             : filteredGitRepositories.length === 0
               ? "Connect GitHub or skip to a local checkout."
               : `${filteredGitRepositories.length} local repo${filteredGitRepositories.length === 1 ? "" : "s"} pinned.`
+        : view === "files"
+          ? `${servers.length} saved server${servers.length === 1 ? "" : "s"} plus local drives available for inline browsing.`
         : view === "keychain"
           ? `${filteredKeychainItems.length} saved credential${filteredKeychainItems.length === 1 ? "" : "s"}`
           : loading

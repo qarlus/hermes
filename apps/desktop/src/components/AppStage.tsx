@@ -14,6 +14,7 @@ import type {
 } from "@hermes/core";
 import { ArrowUpCircle, Laptop, Server } from "lucide-react";
 import { HostDashboard } from "../features/dashboard/HostDashboard";
+import { FileBrowserPage } from "../features/files/FileBrowserPage";
 import { GitPage, type GitRepositoryView, type GitToolbarContext } from "../features/git/GitPage";
 import { KeychainPage } from "../features/keychain/KeychainPage";
 import { SessionCommandRail } from "../features/sessions/SessionCommandRail";
@@ -340,6 +341,8 @@ export function AppStage({
               selectedRepositoryId={selectedGitRepositoryId}
               tabs={tabs}
             />
+          ) : view === "files" ? (
+            <FileBrowserPage servers={servers} />
           ) : (
             <HostDashboard
               favoriteServers={favoriteServers}

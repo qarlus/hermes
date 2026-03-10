@@ -76,6 +76,43 @@ export interface ConnectLocalSessionInput {
   label?: string;
 }
 
+export type FileBrowserTargetKind = "local" | "server";
+export type FileBrowserEntryKind = "directory" | "file" | "symlink" | "other";
+export type FileTransferOperation = "copy" | "move";
+
+export interface FileBrowserTarget {
+  kind: FileBrowserTargetKind;
+  serverId?: string;
+  path?: string | null;
+}
+
+export interface FileBrowserEntryRecord {
+  name: string;
+  path: string;
+  kind: FileBrowserEntryKind;
+  size: number | null;
+  modifiedAt: string | null;
+  hidden: boolean;
+}
+
+export interface FileBrowserDirectoryRecord {
+  target: FileBrowserTarget;
+  title: string;
+  parentPath: string | null;
+  entries: FileBrowserEntryRecord[];
+  canWrite: boolean;
+}
+
+export interface FilePreviewRecord {
+  target: FileBrowserTarget;
+  name: string;
+  size: number | null;
+  encoding: "text" | "base64";
+  content: string;
+  binary: boolean;
+  truncated: boolean;
+}
+
 export interface TerminalCommandRecord {
   id: string;
   name: string;

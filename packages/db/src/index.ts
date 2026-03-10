@@ -3,6 +3,10 @@ import type {
   CliToolUpdateRecord,
   ConnectLocalSessionInput,
   ConnectSessionInput,
+  FileBrowserDirectoryRecord,
+  FileBrowserTarget,
+  FilePreviewRecord,
+  FileTransferOperation,
   CreateTerminalCommandInput,
   CreateLocalSshKeyInput,
   GitHubAuthSession,
@@ -69,6 +73,40 @@ export const connectSession = (input: ConnectSessionInput) =>
 
 export const connectLocalSession = (input?: ConnectLocalSessionInput) =>
   invoke<TerminalTab>("connect_local_session", input ? { input } : {});
+
+export const readFileDirectory = (target: FileBrowserTarget) =>
+  invoke<FileBrowserDirectoryRecord>("read_file_directory", { target });
+
+export const readFilePreview = (target: FileBrowserTarget) =>
+  invoke<FilePreviewRecord>("read_file_preview", { target });
+
+export const createFileDirectory = (target: FileBrowserTarget, name: string) =>
+  invoke<FileBrowserDirectoryRecord>("create_file_directory", { target, name });
+
+export const deleteFileEntries = (targets: FileBrowserTarget[]) =>
+  invoke<void>("delete_file_entries", { targets });
+
+export const transferFileEntries = (
+  sources: FileBrowserTarget[],
+  destination: FileBrowserTarget,
+  operation: FileTransferOperation
+) =>
+  invoke<FileBrowserDirectoryRecord>("transfer_file_entries", {
+    sources,
+    destination,
+    operation
+  });
+
+export const writeFile = (
+  parent: FileBrowserTarget,
+  name: string,
+  contentsBase64: string
+) =>
+  invoke<FileBrowserDirectoryRecord>("write_file", {
+    parent,
+    name,
+    contentsBase64
+  });
 
 export const listTerminalCommands = () =>
   invoke<TerminalCommandRecord[]>("list_terminal_commands");

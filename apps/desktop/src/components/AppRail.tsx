@@ -49,9 +49,14 @@ export function AppRail({ view, onNavigate }: AppRailProps) {
             <FolderGit2 size={16} />
             <span>Git</span>
           </button>
-          <button className="rail__item" title="SFTP" type="button">
+          <button
+            className={`rail__item ${view === "files" ? "rail__item--active" : ""}`}
+            onClick={() => onNavigate("files")}
+            title="Files"
+            type="button"
+          >
             <Boxes size={16} />
-            <span>SFTP</span>
+            <span>Files</span>
           </button>
           <button className="rail__item" title="Logs" type="button">
             <Logs size={16} />

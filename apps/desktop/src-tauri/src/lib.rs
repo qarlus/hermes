@@ -3,7 +3,7 @@ use std::{
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
@@ -14,7 +14,7 @@ use aes_gcm_siv::{
     Aes256GcmSiv, Nonce,
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use chrono::Utc;
+use chrono::{TimeZone, Utc};
 use keyring::{Entry, Error as KeyringError};
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use rand::{rngs::OsRng, RngCore};
@@ -169,6 +169,47 @@ struct ConnectSessionInput {
 struct ConnectLocalSessionInput {
     cwd: Option<String>,
     label: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct FileBrowserTargetInput {
+    kind: String,
+    server_id: Option<String>,
+    path: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct FileBrowserEntryRecord {
+    name: String,
+    path: String,
+    kind: String,
+    size: Option<u64>,
+    modified_at: Option<String>,
+    hidden: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FileBrowserDirectoryRecord {
+    target: FileBrowserTargetInput,
+    title: String,
+    parent_path: Option<String>,
+    entries: Vec<FileBrowserEntryRecord>,
+    can_write: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FilePreviewRecord {
+    target: FileBrowserTargetInput,
+    name: String,
+    size: Option<u64>,
+    encoding: String,
+    content: String,
+    binary: bool,
+    truncated: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1895,6 +1936,86 @@ fn connect_local_session(
 }
 
 #[tauri::command]
+async fn read_file_directory(
+    state: State<'_, AppState>,
+    target: FileBrowserTargetInput,
+) -> Result<FileBrowserDirectoryRecord, String> {
+    let database = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || load_file_directory(&database, &target))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn read_file_preview(
+    state: State<'_, AppState>,
+    target: FileBrowserTargetInput,
+) -> Result<FilePreviewRecord, String> {
+    let database = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || load_file_preview(&database, &target))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn create_file_directory(
+    state: State<'_, AppState>,
+    target: FileBrowserTargetInput,
+    name: String,
+) -> Result<FileBrowserDirectoryRecord, String> {
+    let database = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        create_file_directory_inner(&database, &target, &name)?;
+        load_file_directory(&database, &target)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn delete_file_entries(
+    state: State<'_, AppState>,
+    targets: Vec<FileBrowserTargetInput>,
+) -> Result<(), String> {
+    let database = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || delete_file_entries_inner(&database, &targets))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn transfer_file_entries(
+    state: State<'_, AppState>,
+    sources: Vec<FileBrowserTargetInput>,
+    destination: FileBrowserTargetInput,
+    operation: String,
+) -> Result<FileBrowserDirectoryRecord, String> {
+    let database = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        transfer_file_entries_inner(&database, &sources, &destination, &operation)?;
+        load_file_directory(&database, &destination)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn write_file(
+    state: State<'_, AppState>,
+    parent: FileBrowserTargetInput,
+    name: String,
+    contents_base64: String,
+) -> Result<FileBrowserDirectoryRecord, String> {
+    let database = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        write_file_inner(&database, &parent, &name, &contents_base64)?;
+        load_file_directory(&database, &parent)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 fn list_terminal_commands(state: State<'_, AppState>) -> Result<Vec<TerminalCommandRecord>, String> {
     state.db.list_terminal_commands()
 }
@@ -2473,6 +2594,879 @@ fn list_session_statuses(state: State<'_, AppState>) -> Result<Vec<SessionStatus
     Ok(snapshots)
 }
 
+const FILE_PREVIEW_LIMIT_BYTES: usize = 64 * 1024;
+
+fn load_file_directory(
+    database: &Database,
+    target: &FileBrowserTargetInput,
+) -> Result<FileBrowserDirectoryRecord, String> {
+    match normalized_file_target_kind(&target.kind)? {
+        "local" => load_local_file_directory(target),
+        "server" => load_remote_file_directory(database, target),
+        _ => Err("Unsupported file target.".to_string()),
+    }
+}
+
+fn load_local_file_directory(target: &FileBrowserTargetInput) -> Result<FileBrowserDirectoryRecord, String> {
+    let path = target.path.as_deref().map(str::trim).filter(|value| !value.is_empty());
+    if path.is_none() {
+        let mut entries = local_drive_entries();
+        sort_file_entries(&mut entries);
+        return Ok(FileBrowserDirectoryRecord {
+            target: FileBrowserTargetInput {
+                kind: "local".to_string(),
+                server_id: None,
+                path: None,
+            },
+            title: "Local drives".to_string(),
+            parent_path: None,
+            entries,
+            can_write: false,
+        });
+    }
+
+    let directory = PathBuf::from(path.unwrap());
+    if !directory.exists() {
+        return Err(format!("Directory was not found: {}", directory.display()));
+    }
+    if !directory.is_dir() {
+        return Err(format!("Path is not a directory: {}", directory.display()));
+    }
+
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(&directory).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+        let file_type = metadata.file_type();
+        let kind = if file_type.is_dir() {
+            "directory"
+        } else if file_type.is_file() {
+            "file"
+        } else if file_type.is_symlink() {
+            "symlink"
+        } else {
+            "other"
+        };
+        let modified_at = metadata.modified().ok().map(|value| chrono::DateTime::<Utc>::from(value).to_rfc3339());
+        entries.push(FileBrowserEntryRecord {
+            name: entry.file_name().to_string_lossy().to_string(),
+            path: path.to_string_lossy().to_string(),
+            kind: kind.to_string(),
+            size: if file_type.is_file() {
+                Some(metadata.len())
+            } else {
+                None
+            },
+            modified_at,
+            hidden: is_hidden_name(&entry.file_name().to_string_lossy()),
+        });
+    }
+
+    sort_file_entries(&mut entries);
+
+    Ok(FileBrowserDirectoryRecord {
+        target: FileBrowserTargetInput {
+            kind: "local".to_string(),
+            server_id: None,
+            path: Some(directory.to_string_lossy().to_string()),
+        },
+        title: directory_title(&directory),
+        parent_path: directory.parent().map(|value| value.to_string_lossy().to_string()),
+        entries,
+        can_write: fs::metadata(&directory)
+            .map(|metadata| !metadata.permissions().readonly())
+            .unwrap_or(true),
+    })
+}
+
+fn load_remote_file_directory(
+    database: &Database,
+    target: &FileBrowserTargetInput,
+) -> Result<FileBrowserDirectoryRecord, String> {
+    let server = file_target_server(database, target)?;
+    let requested_path = target.path.clone().unwrap_or_default();
+    let script = r#"target="$1"
+if [ -n "$target" ]; then
+  cd -- "$target" || exit 11
+else
+  cd -- "$HOME" || exit 11
+fi
+pwd
+printf '\0'
+find . -mindepth 1 -maxdepth 1 -printf '%P\0%y\0%s\0%T@\0' 2>/dev/null
+"#;
+    let output = ssh_command_output_script(database, &server, script, &[requested_path.as_str()])?;
+    if !output.status.success() {
+        return Err(command_error_message(
+            &output,
+            "Failed to load the remote directory.",
+        ));
+    }
+
+    let mut tokens = output.stdout.split(|byte| *byte == 0_u8);
+    let current_path = String::from_utf8_lossy(tokens.next().unwrap_or_default())
+        .trim()
+        .to_string();
+
+    let mut entries = Vec::new();
+    loop {
+        let Some(name_bytes) = tokens.next() else {
+            break;
+        };
+        if name_bytes.is_empty() {
+            break;
+        }
+        let file_type = tokens.next().unwrap_or_default();
+        let size_bytes = tokens.next().unwrap_or_default();
+        let modified_bytes = tokens.next().unwrap_or_default();
+
+        let name = String::from_utf8_lossy(name_bytes).to_string();
+        if name.is_empty() {
+            continue;
+        }
+
+        let kind = match file_type.first().copied() {
+            Some(b'd') => "directory",
+            Some(b'f') => "file",
+            Some(b'l') => "symlink",
+            _ => "other",
+        };
+        let full_path = join_remote_path(&current_path, &name);
+        let size = if kind == "file" {
+            String::from_utf8_lossy(size_bytes).trim().parse::<u64>().ok()
+        } else {
+            None
+        };
+        let modified_at = parse_remote_epoch_timestamp(&String::from_utf8_lossy(modified_bytes));
+        entries.push(FileBrowserEntryRecord {
+            name: name.clone(),
+            path: full_path,
+            kind: kind.to_string(),
+            size,
+            modified_at,
+            hidden: is_hidden_name(&name),
+        });
+    }
+
+    sort_file_entries(&mut entries);
+
+    Ok(FileBrowserDirectoryRecord {
+        target: FileBrowserTargetInput {
+            kind: "server".to_string(),
+            server_id: Some(server.id.clone()),
+            path: Some(current_path.clone()),
+        },
+        title: current_path.clone(),
+        parent_path: remote_parent_path(&current_path),
+        entries,
+        can_write: true,
+    })
+}
+
+fn load_file_preview(
+    database: &Database,
+    target: &FileBrowserTargetInput,
+) -> Result<FilePreviewRecord, String> {
+    match normalized_file_target_kind(&target.kind)? {
+        "local" => load_local_file_preview(target),
+        "server" => load_remote_file_preview(database, target),
+        _ => Err("Unsupported file target.".to_string()),
+    }
+}
+
+fn load_local_file_preview(target: &FileBrowserTargetInput) -> Result<FilePreviewRecord, String> {
+    let path = required_file_path(target)?;
+    let absolute_path = PathBuf::from(&path);
+    let metadata = fs::metadata(&absolute_path).map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err("Choose a file to preview.".to_string());
+    }
+
+    let file = fs::File::open(&absolute_path).map_err(|error| error.to_string())?;
+    let mut bytes = Vec::new();
+    file.take((FILE_PREVIEW_LIMIT_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+
+    let truncated = bytes.len() > FILE_PREVIEW_LIMIT_BYTES || metadata.len() > FILE_PREVIEW_LIMIT_BYTES as u64;
+    if bytes.len() > FILE_PREVIEW_LIMIT_BYTES {
+        bytes.truncate(FILE_PREVIEW_LIMIT_BYTES);
+    }
+
+    Ok(build_file_preview(
+        target.clone(),
+        absolute_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or(&path)
+            .to_string(),
+        Some(metadata.len()),
+        bytes,
+        truncated,
+    ))
+}
+
+fn load_remote_file_preview(
+    database: &Database,
+    target: &FileBrowserTargetInput,
+) -> Result<FilePreviewRecord, String> {
+    let server = file_target_server(database, target)?;
+    let path = required_file_path(target)?;
+    let script = format!(
+        "path=\"$1\"\nif [ -z \"$path\" ] || [ ! -f \"$path\" ]; then\n  exit 12\nfi\nwc -c < \"$path\" | tr -d ' \\n'\nprintf '\\0'\nhead -c {FILE_PREVIEW_LIMIT_BYTES} \"$path\"\n"
+    );
+    let output = ssh_command_output_script(database, &server, &script, &[path.as_str()])?;
+    if !output.status.success() {
+        return Err(command_error_message(
+            &output,
+            "Failed to load the remote file preview.",
+        ));
+    }
+
+    let Some(separator) = output.stdout.iter().position(|byte| *byte == 0_u8) else {
+        return Err("Remote file preview was malformed.".to_string());
+    };
+    let size = String::from_utf8_lossy(&output.stdout[..separator])
+        .trim()
+        .parse::<u64>()
+        .ok();
+    let bytes = output.stdout[(separator + 1)..].to_vec();
+    let truncated = size.is_some_and(|value| value > bytes.len() as u64);
+
+    Ok(build_file_preview(
+        FileBrowserTargetInput {
+            kind: "server".to_string(),
+            server_id: Some(server.id.clone()),
+            path: Some(path.clone()),
+        },
+        file_name_from_path(&path),
+        size,
+        bytes,
+        truncated,
+    ))
+}
+
+fn create_file_directory_inner(
+    database: &Database,
+    target: &FileBrowserTargetInput,
+    name: &str,
+) -> Result<(), String> {
+    let sanitized_name = sanitize_file_name(name)?;
+    match normalized_file_target_kind(&target.kind)? {
+        "local" => {
+            let parent = required_directory_path(target)?;
+            fs::create_dir(parent.join(sanitized_name)).map_err(|error| error.to_string())
+        }
+        "server" => {
+            let server = file_target_server(database, target)?;
+            let path = target.path.clone().unwrap_or_default();
+            let script = r#"parent="$1"
+name="$2"
+if [ -n "$parent" ]; then
+  cd -- "$parent" || exit 11
+else
+  cd -- "$HOME" || exit 11
+fi
+mkdir -- "$name"
+"#;
+            let output =
+                ssh_command_output_script(database, &server, script, &[path.as_str(), sanitized_name.as_str()])?;
+            if output.status.success() {
+                Ok(())
+            } else {
+                Err(command_error_message(
+                    &output,
+                    "Failed to create the remote folder.",
+                ))
+            }
+        }
+        _ => Err("Unsupported file target.".to_string()),
+    }
+}
+
+fn delete_file_entries_inner(
+    database: &Database,
+    targets: &[FileBrowserTargetInput],
+) -> Result<(), String> {
+    if targets.is_empty() {
+        return Ok(());
+    }
+
+    for target in targets {
+        match normalized_file_target_kind(&target.kind)? {
+            "local" => {
+                let path = PathBuf::from(required_file_path(target)?);
+                if path.is_dir() {
+                    fs::remove_dir_all(&path).map_err(|error| error.to_string())?;
+                } else if path.exists() {
+                    fs::remove_file(&path).map_err(|error| error.to_string())?;
+                }
+            }
+            "server" => {
+                let server = file_target_server(database, target)?;
+                let path = required_file_path(target)?;
+                let script = r#"for path in "$@"; do
+  rm -rf -- "$path" || exit 13
+done
+"#;
+                let output = ssh_command_output_script(database, &server, script, &[path.as_str()])?;
+                if !output.status.success() {
+                    return Err(command_error_message(
+                        &output,
+                        "Failed to delete the remote item.",
+                    ));
+                }
+            }
+            _ => return Err("Unsupported file target.".to_string()),
+        }
+    }
+
+    Ok(())
+}
+
+fn transfer_file_entries_inner(
+    database: &Database,
+    sources: &[FileBrowserTargetInput],
+    destination: &FileBrowserTargetInput,
+    operation: &str,
+) -> Result<(), String> {
+    if sources.is_empty() {
+        return Ok(());
+    }
+
+    let move_requested = normalized_file_transfer_operation(operation)? == "move";
+    let destination_kind = normalized_file_target_kind(&destination.kind)?;
+
+    let all_local = sources
+        .iter()
+        .all(|source| normalized_file_target_kind(&source.kind) == Ok("local"));
+    let all_remote = sources
+        .iter()
+        .all(|source| normalized_file_target_kind(&source.kind) == Ok("server"));
+
+    match (all_local, all_remote, destination_kind) {
+        (true, false, "local") => transfer_local_to_local(sources, destination, move_requested),
+        (true, false, "server") => transfer_local_to_remote(database, sources, destination, move_requested),
+        (false, true, "local") => transfer_remote_to_local(database, sources, destination, move_requested),
+        (false, true, "server") => transfer_remote_to_remote(database, sources, destination, move_requested),
+        _ => Err("Mixed file sources are not supported in one paste action.".to_string()),
+    }
+}
+
+fn write_file_inner(
+    database: &Database,
+    parent: &FileBrowserTargetInput,
+    name: &str,
+    contents_base64: &str,
+) -> Result<(), String> {
+    let file_name = sanitize_file_name(name)?;
+    let contents = STANDARD
+        .decode(contents_base64)
+        .map_err(|error| error.to_string())?;
+
+    match normalized_file_target_kind(&parent.kind)? {
+        "local" => {
+            let directory = required_directory_path(parent)?;
+            fs::write(directory.join(file_name), contents).map_err(|error| error.to_string())
+        }
+        "server" => {
+            let server = file_target_server(database, parent)?;
+            let parent_path = parent
+                .path
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(".");
+            let remote_path = if parent_path == "." {
+                file_name.clone()
+            } else {
+                join_remote_path(parent_path, &file_name)
+            };
+
+            let temporary_path = std::env::temp_dir().join(format!("hermes-upload-{}", Uuid::new_v4()));
+            fs::write(&temporary_path, contents).map_err(|error| error.to_string())?;
+            let transfer_result = (|| {
+                let mut command = scp_command(database, &server)?;
+                command.arg(temporary_path.as_os_str());
+                command.arg(build_scp_remote_spec(&server, &remote_path));
+                let output = command.output().map_err(|error| error.to_string())?;
+                if output.status.success() {
+                    Ok(())
+                } else {
+                    Err(command_error_message(
+                        &output,
+                        "Failed to upload the file.",
+                    ))
+                }
+            })();
+            let _ = fs::remove_file(&temporary_path);
+            transfer_result
+        }
+        _ => Err("Unsupported file target.".to_string()),
+    }
+}
+
+fn transfer_local_to_local(
+    sources: &[FileBrowserTargetInput],
+    destination: &FileBrowserTargetInput,
+    move_requested: bool,
+) -> Result<(), String> {
+    let destination_directory = required_directory_path(destination)?;
+    ensure_directory_exists(&destination_directory)?;
+
+    for source in sources {
+        let source_path = PathBuf::from(required_file_path(source)?);
+        copy_or_move_local_path(&source_path, &destination_directory, move_requested)?;
+    }
+
+    Ok(())
+}
+
+fn transfer_local_to_remote(
+    database: &Database,
+    sources: &[FileBrowserTargetInput],
+    destination: &FileBrowserTargetInput,
+    move_requested: bool,
+) -> Result<(), String> {
+    let server = file_target_server(database, destination)?;
+    let destination_path = destination
+        .path
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(".");
+    let mut command = scp_command(database, &server)?;
+    command.arg("-r");
+    for source in sources {
+        command.arg(required_file_path(source)?);
+    }
+    command.arg(build_scp_remote_spec(&server, destination_path));
+
+    let output = command.output().map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(command_error_message(
+            &output,
+            "Failed to copy files to the remote server.",
+        ));
+    }
+
+    if move_requested {
+        delete_file_entries_inner(database, sources)?;
+    }
+
+    Ok(())
+}
+
+fn transfer_remote_to_local(
+    database: &Database,
+    sources: &[FileBrowserTargetInput],
+    destination: &FileBrowserTargetInput,
+    move_requested: bool,
+) -> Result<(), String> {
+    let destination_directory = required_directory_path(destination)?;
+    ensure_directory_exists(&destination_directory)?;
+
+    let first_server = file_target_server(database, &sources[0])?;
+    if sources.iter().any(|source| source.server_id.as_deref() != Some(first_server.id.as_str())) {
+        return Err("Paste from multiple servers is not supported.".to_string());
+    }
+
+    let mut command = scp_command(database, &first_server)?;
+    command.arg("-r");
+    for source in sources {
+        command.arg(build_scp_remote_spec(&first_server, &required_file_path(source)?));
+    }
+    command.arg(destination_directory);
+
+    let output = command.output().map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(command_error_message(
+            &output,
+            "Failed to copy files from the remote server.",
+        ));
+    }
+
+    if move_requested {
+        delete_file_entries_inner(database, sources)?;
+    }
+
+    Ok(())
+}
+
+fn transfer_remote_to_remote(
+    database: &Database,
+    sources: &[FileBrowserTargetInput],
+    destination: &FileBrowserTargetInput,
+    move_requested: bool,
+) -> Result<(), String> {
+    let destination_server = file_target_server(database, destination)?;
+    if sources
+        .iter()
+        .any(|source| source.server_id.as_deref() != Some(destination_server.id.as_str()))
+    {
+        return Err("Drag and drop between different servers is not supported yet.".to_string());
+    }
+
+    let destination_path = destination
+        .path
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| ".".to_string());
+    let action = if move_requested { "mv" } else { "cp -R" };
+    let script = format!(
+        "dest=\"$1\"\nshift\nif [ ! -d \"$dest\" ]; then\n  exit 21\nfi\nfor source in \"$@\"; do\n  {action} -- \"$source\" \"$dest\"/ || exit 20\ndone\n"
+    );
+    let mut args = vec![destination_path];
+    for source in sources {
+        args.push(required_file_path(source)?);
+    }
+    let borrowed = args.iter().map(|value| value.as_str()).collect::<Vec<_>>();
+    let output = ssh_command_output_script(database, &destination_server, &script, &borrowed)?;
+    if !output.status.success() {
+        return Err(command_error_message(
+            &output,
+            "Failed to transfer the remote files.",
+        ));
+    }
+
+    Ok(())
+}
+
+fn copy_or_move_local_path(
+    source: &Path,
+    destination_directory: &Path,
+    move_requested: bool,
+) -> Result<(), String> {
+    let name = source
+        .file_name()
+        .ok_or_else(|| format!("Path has no file name: {}", source.display()))?;
+    let destination_path = destination_directory.join(name);
+
+    if destination_path == source {
+        return Ok(());
+    }
+    if destination_path.starts_with(source) {
+        return Err("Cannot paste a folder into itself.".to_string());
+    }
+    if destination_path.exists() {
+        return Err(format!("Destination already exists: {}", destination_path.display()));
+    }
+
+    if move_requested {
+        match fs::rename(source, &destination_path) {
+            Ok(()) => return Ok(()),
+            Err(_) => {
+                copy_path_recursive(source, &destination_path)?;
+                remove_local_path(source)?;
+                return Ok(());
+            }
+        }
+    }
+
+    copy_path_recursive(source, &destination_path)
+}
+
+fn copy_path_recursive(source: &Path, destination: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(source).map_err(|error| error.to_string())?;
+    if metadata.file_type().is_dir() {
+        fs::create_dir(destination).map_err(|error| error.to_string())?;
+        for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            copy_path_recursive(&entry.path(), &destination.join(entry.file_name()))?;
+        }
+        Ok(())
+    } else {
+        fs::copy(source, destination)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+}
+
+fn remove_local_path(path: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    if metadata.file_type().is_dir() {
+        fs::remove_dir_all(path).map_err(|error| error.to_string())
+    } else {
+        fs::remove_file(path).map_err(|error| error.to_string())
+    }
+}
+
+fn ensure_directory_exists(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Err(format!("Directory was not found: {}", path.display()));
+    }
+    if !path.is_dir() {
+        return Err(format!("Path is not a directory: {}", path.display()));
+    }
+    Ok(())
+}
+
+fn build_file_preview(
+    target: FileBrowserTargetInput,
+    name: String,
+    size: Option<u64>,
+    bytes: Vec<u8>,
+    truncated: bool,
+) -> FilePreviewRecord {
+    if let Ok(text) = String::from_utf8(bytes.clone()) {
+        FilePreviewRecord {
+            target,
+            name,
+            size,
+            encoding: "text".to_string(),
+            content: text,
+            binary: false,
+            truncated,
+        }
+    } else {
+        FilePreviewRecord {
+            target,
+            name,
+            size,
+            encoding: "base64".to_string(),
+            content: STANDARD.encode(bytes),
+            binary: true,
+            truncated,
+        }
+    }
+}
+
+fn local_drive_entries() -> Vec<FileBrowserEntryRecord> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut entries = Vec::new();
+        for letter in b'A'..=b'Z' {
+            let path = format!("{}:\\", letter as char);
+            let candidate = PathBuf::from(&path);
+            if candidate.exists() {
+                entries.push(FileBrowserEntryRecord {
+                    name: path.clone(),
+                    path,
+                    kind: "directory".to_string(),
+                    size: None,
+                    modified_at: None,
+                    hidden: false,
+                });
+            }
+        }
+        entries
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        vec![FileBrowserEntryRecord {
+            name: "/".to_string(),
+            path: "/".to_string(),
+            kind: "directory".to_string(),
+            size: None,
+            modified_at: None,
+            hidden: false,
+        }]
+    }
+}
+
+fn sort_file_entries(entries: &mut [FileBrowserEntryRecord]) {
+    entries.sort_by(|left, right| {
+        if left.kind == right.kind {
+            left.name.to_ascii_lowercase().cmp(&right.name.to_ascii_lowercase())
+        } else if left.kind == "directory" {
+            std::cmp::Ordering::Less
+        } else if right.kind == "directory" {
+            std::cmp::Ordering::Greater
+        } else {
+            left.name.to_ascii_lowercase().cmp(&right.name.to_ascii_lowercase())
+        }
+    });
+}
+
+fn normalized_file_target_kind(value: &str) -> Result<&'static str, String> {
+    match value.trim() {
+        "local" => Ok("local"),
+        "server" => Ok("server"),
+        _ => Err("Unsupported file target.".to_string()),
+    }
+}
+
+fn normalized_file_transfer_operation(value: &str) -> Result<&'static str, String> {
+    match value.trim() {
+        "copy" => Ok("copy"),
+        "move" => Ok("move"),
+        _ => Err("Unsupported file transfer operation.".to_string()),
+    }
+}
+
+fn file_target_server(database: &Database, target: &FileBrowserTargetInput) -> Result<ServerRecord, String> {
+    let server_id = target
+        .server_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Choose a saved server first.".to_string())?;
+    database.get_server(server_id)
+}
+
+fn required_file_path(target: &FileBrowserTargetInput) -> Result<String, String> {
+    target
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .ok_or_else(|| "Choose a file or folder first.".to_string())
+}
+
+fn required_directory_path(target: &FileBrowserTargetInput) -> Result<PathBuf, String> {
+    let path = required_file_path(target)?;
+    Ok(PathBuf::from(path))
+}
+
+fn sanitize_file_name(input: &str) -> Result<String, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("A file or folder name is required.".to_string());
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') || trimmed == "." || trimmed == ".." {
+        return Err("Names cannot include path separators.".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn is_hidden_name(name: &str) -> bool {
+    name.starts_with('.')
+}
+
+fn directory_title(path: &Path) -> String {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| path.to_string_lossy().to_string())
+}
+
+fn file_name_from_path(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(path)
+        .to_string()
+}
+
+fn remote_parent_path(path: &str) -> Option<String> {
+    if path == "/" {
+        return None;
+    }
+
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Some("/".to_string());
+    }
+
+    match trimmed.rfind('/') {
+        Some(0) => Some("/".to_string()),
+        Some(index) => Some(trimmed[..index].to_string()),
+        None => None,
+    }
+}
+
+fn join_remote_path(parent: &str, name: &str) -> String {
+    if parent == "/" {
+        format!("/{name}")
+    } else {
+        format!("{}/{}", parent.trim_end_matches('/'), name)
+    }
+}
+
+fn parse_remote_epoch_timestamp(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut parts = trimmed.split('.');
+    let seconds = parts.next()?.parse::<i64>().ok()?;
+    let nanos = parts
+        .next()
+        .map(|fraction| {
+            let padded = format!("{:0<9}", &fraction[..fraction.len().min(9)]);
+            padded.parse::<u32>().ok()
+        })
+        .flatten()
+        .unwrap_or(0);
+
+    Utc.timestamp_opt(seconds, nanos)
+        .single()
+        .map(|value| value.to_rfc3339())
+}
+
+fn ssh_command_output_script(
+    database: &Database,
+    server: &ServerRecord,
+    script: &str,
+    args: &[&str],
+) -> Result<std::process::Output, String> {
+    let auth_secret = database.resolve_server_secret(server)?;
+    let mut command = Command::new(resolve_program_path("ssh").unwrap_or_else(|| PathBuf::from("ssh")));
+    command.arg("-o").arg("BatchMode=yes");
+    command.arg("-o").arg("ConnectTimeout=5");
+    apply_shell_auth(&mut command, server, auth_secret.as_deref())?;
+    command.arg(ssh_target(server));
+    command.arg(build_remote_script_command(args));
+    command.stdin(Stdio::piped());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "Failed to open SSH stdin.".to_string())?;
+        stdin
+            .write_all(script.as_bytes())
+            .and_then(|_| stdin.flush())
+            .map_err(|error| error.to_string())?;
+    }
+    child.wait_with_output().map_err(|error| error.to_string())
+}
+
+fn scp_command(database: &Database, server: &ServerRecord) -> Result<Command, String> {
+    let auth_secret = database.resolve_server_secret(server)?;
+    let mut command = Command::new(resolve_program_path("scp").unwrap_or_else(|| PathBuf::from("scp")));
+    if server.port != 22 {
+        command.arg("-P").arg(server.port.to_string());
+    }
+    match server.auth_kind.as_str() {
+        AUTH_SSH_KEY => {
+            let secret = auth_secret.ok_or_else(|| "Stored SSH key path was not found.".to_string())?;
+            let expanded = expand_home_path(&secret);
+            if !expanded.exists() {
+                return Err(format!("SSH key path was not found: {}", expanded.display()));
+            }
+            command.arg("-i").arg(expanded);
+        }
+        AUTH_PASSWORD => {
+            return Err("Password-authenticated servers are not supported in the file browser yet.".to_string());
+        }
+        _ => {}
+    }
+    Ok(command)
+}
+
+fn build_scp_remote_spec(server: &ServerRecord, path: &str) -> String {
+    format!("{}:{}", ssh_target(server), shell_single_quote(path))
+}
+
+fn build_remote_script_command(args: &[&str]) -> String {
+    let mut command = String::from("sh -s --");
+    for arg in args {
+        command.push(' ');
+        command.push_str(&shell_single_quote(arg));
+    }
+    command
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -2510,6 +3504,12 @@ pub fn run() {
             list_tmux_sessions,
             connect_session,
             connect_local_session,
+            read_file_directory,
+            read_file_preview,
+            create_file_directory,
+            delete_file_entries,
+            transfer_file_entries,
+            write_file,
             list_terminal_commands,
             create_terminal_command,
             delete_terminal_command,

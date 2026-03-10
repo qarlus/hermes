@@ -9,7 +9,7 @@ export type InspectorState =
   | { kind: "project"; mode: "create" | "edit" }
   | { kind: "server"; mode: "create" | "edit" };
 
-export type ViewState = "dashboard" | "workspace" | "sessions" | "keychain" | "git";
+export type ViewState = "dashboard" | "workspace" | "sessions" | "keychain" | "git" | "files";
 
 export function normalizeProjectInput(input: ProjectInput): ProjectInput {
   return {
