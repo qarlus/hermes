@@ -1,4 +1,4 @@
-import { Boxes, FolderGit2, HardDrive, KeyRound, Logs, TerminalSquare } from "lucide-react";
+import { Boxes, FolderGit2, HardDrive, KeyRound, Logs, Settings2, TerminalSquare } from "lucide-react";
 import type { ViewState } from "../lib/app";
 
 type AppRailProps = {
@@ -57,6 +57,15 @@ export function AppRail({ view, onNavigate }: AppRailProps) {
           >
             <Boxes size={16} />
             <span>Files</span>
+          </button>
+          <button
+            className={`rail__item ${view === "settings" ? "rail__item--active" : ""}`}
+            onClick={() => onNavigate("settings")}
+            title="Settings"
+            type="button"
+          >
+            <Settings2 size={16} />
+            <span>Settings</span>
           </button>
           <button className="rail__item" title="Logs" type="button">
             <Logs size={16} />

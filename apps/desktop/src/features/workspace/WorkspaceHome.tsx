@@ -24,6 +24,7 @@ interface WorkspaceHomeProps {
   onOpenSession: (tabId: string) => void;
   onRefreshTmux: () => void;
   onCreateServer: () => void;
+  onOpenRelaySetup?: (serverId: string) => void;
 }
 
 export function WorkspaceHome({
@@ -39,7 +40,8 @@ export function WorkspaceHome({
   onEditServer,
   onOpenSession,
   onRefreshTmux,
-  onCreateServer
+  onCreateServer,
+  onOpenRelaySetup
 }: WorkspaceHomeProps) {
   return (
     <div className="workspace-home">
@@ -67,6 +69,7 @@ export function WorkspaceHome({
             servers={servers}
             onConnect={(serverId) => onConnect(serverId)}
             onEdit={onEditServer}
+            onOpenRelaySetup={onOpenRelaySetup}
             onSelect={onSelectServer}
             selectedServerId={selectedServerId}
           />

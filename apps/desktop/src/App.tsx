@@ -82,12 +82,13 @@ import {
   updateServer,
   writeSession
 } from "@hermes/db";
-import { noxTheme } from "@hermes/ui";
+import type { RelayWorkspaceSession } from "@hermes/sync";
 import { AppDialogs } from "./components/AppDialogs";
 import { AppHeader } from "./components/AppHeader";
 import { AppRail } from "./components/AppRail";
 import { AppStage } from "./components/AppStage";
 import type { GitRepositoryView, GitToolbarContext } from "./features/git/GitPage";
+import { RelaySetupDialog } from "./features/settings/RelaySetupDialog";
 import { LocalSessionPresetEditor } from "./features/sessions/LocalSessionPresetEditor";
 import { SessionLauncher } from "./features/sessions/SessionLauncher";
 import { ToolUpdatesPanel } from "./features/sessions/ToolUpdatesPanel";
@@ -100,6 +101,37 @@ import {
   type ViewState
 } from "./lib/app";
 import { isTauriRuntime } from "./lib/runtime";
+import {
+  buildRelayCheckCommand,
+  buildRelayInstallCommand,
+  buildRelayUrls,
+  buildHermesSyncBundle,
+  detectDevicePlatform,
+  getHermesTheme,
+  getTerminalLaunchProfiles,
+  isLocalGitRepository,
+  isLocalSessionPreset,
+  loadHermesSettings,
+  loadRelayClientState,
+  parseHermesSyncBundle,
+  persistHermesSettings,
+  persistRelayClientState,
+  resolveLocalTerminalLaunch,
+  sanitizeRelayClientState,
+  sanitizeHermesSettings,
+  type HermesSettings,
+  type LocalGitRepository,
+  type LocalSessionPreset,
+  type RelayClientState
+} from "./lib/settings";
+import {
+  bootstrapRelayWorkspace,
+  getRelayHealth,
+  inspectRelayWorkspace,
+  joinRelayWorkspace,
+  normalizeRelayUrl,
+  revokeRelayDevice
+} from "./lib/relay";
 import { useAppShortcuts } from "./lib/useAppShortcuts";
 import { useBufferedTerminalInput } from "./lib/useBufferedTerminalInput";
 
@@ -118,18 +150,6 @@ const EMPTY_GIT_TOOLBAR_CONTEXT: GitToolbarContext = {
   headerSubtitle: null,
   headerMeta: [],
   onBack: null
-};
-
-type LocalSessionPreset = {
-  id: string;
-  name: string;
-  path: string;
-};
-
-type LocalGitRepository = {
-  id: string;
-  name: string;
-  path: string;
 };
 
 type GitHubOwnedRepositoriesCache = {
@@ -155,6 +175,7 @@ type ToastRecord = {
 };
 
 export function App() {
+  const devicePlatform = useMemo(() => detectDevicePlatform(), []);
   const [workspaceMode, setWorkspaceMode] = useState<"home" | "terminal">("home");
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [servers, setServers] = useState<ServerRecord[]>([]);
@@ -220,6 +241,15 @@ export function App() {
   const [toolUpdatesLoading, setToolUpdatesLoading] = useState(false);
   const [toolUpdates, setToolUpdates] = useState<CliToolUpdateRecord[]>([]);
   const [toolUpdateBusyId, setToolUpdateBusyId] = useState<string | null>(null);
+  const [settings, setSettings] = useState<HermesSettings>(() => loadHermesSettings(devicePlatform));
+  const [relayState, setRelayState] = useState<RelayClientState>(() =>
+    loadRelayClientState(devicePlatform)
+  );
+  const [relaySetupOpen, setRelaySetupOpen] = useState(false);
+  const [relayBusyAction, setRelayBusyAction] = useState<
+    "bootstrap" | "join" | "refresh" | "revoke" | "health" | null
+  >(null);
+  const [syncBusyAction, setSyncBusyAction] = useState<"export" | "import" | null>(null);
   const [toasts, setToasts] = useState<ToastRecord[]>([]);
   const tabsRef = useRef<TerminalTab[]>([]);
   const toolUpdatesRequestIdRef = useRef(0);
@@ -400,6 +430,45 @@ export function App() {
       null,
     [filteredGitRepositories, gitRepositories, selectedGitRepositoryId]
   );
+  const activeTheme = useMemo(() => getHermesTheme(settings.themeId), [settings.themeId]);
+  const terminalProfiles = useMemo(
+    () => getTerminalLaunchProfiles(devicePlatform),
+    [devicePlatform]
+  );
+  const localTerminalLaunch = useMemo(
+    () => resolveLocalTerminalLaunch(settings, devicePlatform),
+    [devicePlatform, settings]
+  );
+  const relayHostServer = useMemo(
+    () => servers.find((server) => server.id === relayState.hostServerId) ?? null,
+    [relayState.hostServerId, servers]
+  );
+  const relayUrls = useMemo(
+    () =>
+      buildRelayUrls({
+        hostServerHostname: relayHostServer?.hostname ?? null,
+        relayPort: relayState.relayPort,
+        advancedRelayUrl: relayState.advancedRelayUrl
+      }),
+    [relayHostServer?.hostname, relayState.advancedRelayUrl, relayState.relayPort]
+  );
+  const localLauncherSummary = useMemo(() => {
+    if (localTerminalLaunch.profile.id !== "custom") {
+      return localTerminalLaunch.profile.label;
+    }
+
+    const customLabel = settings.customTerminalLabel.trim();
+    if (customLabel) {
+      return customLabel;
+    }
+
+    return settings.customTerminalProgram.trim() || "Custom command";
+  }, [
+    localTerminalLaunch.profile.id,
+    localTerminalLaunch.profile.label,
+    settings.customTerminalLabel,
+    settings.customTerminalProgram
+  ]);
 
   useEffect(() => {
     void refreshWorkspace();
@@ -450,12 +519,35 @@ export function App() {
   }, [localGitRepositories]);
 
   useEffect(() => {
+    persistHermesSettings(settings);
+  }, [settings]);
+
+  useEffect(() => {
+    persistRelayClientState(relayState);
+  }, [relayState]);
+
+  useEffect(() => {
     if (selectedGitRepositoryId && localGitRepositories.some((repo) => repo.id === selectedGitRepositoryId)) {
       return;
     }
 
     setSelectedGitRepositoryId(localGitRepositories[0]?.id ?? null);
   }, [localGitRepositories, selectedGitRepositoryId]);
+
+  useEffect(() => {
+    if (!relayState.hostServerId) {
+      return;
+    }
+
+    if (servers.some((server) => server.id === relayState.hostServerId)) {
+      return;
+    }
+
+    updateRelayState((current) => ({
+      ...current,
+      hostServerId: null
+    }));
+  }, [relayState.hostServerId, servers]);
 
   useEffect(() => {
     setGitCommitMessage("");
@@ -658,6 +750,30 @@ export function App() {
     }, TOAST_DURATION_MS);
 
     toastTimeoutsRef.current.set(id, timeoutId);
+  };
+
+  const updateSettings = (
+    updater: HermesSettings | ((current: HermesSettings) => HermesSettings)
+  ) => {
+    setSettings((current) => {
+      const nextSettings =
+        typeof updater === "function"
+          ? (updater as (current: HermesSettings) => HermesSettings)(current)
+          : updater;
+      return sanitizeHermesSettings(nextSettings, devicePlatform);
+    });
+  };
+
+  const updateRelayState = (
+    updater: RelayClientState | ((current: RelayClientState) => RelayClientState)
+  ) => {
+    setRelayState((current) => {
+      const nextState =
+        typeof updater === "function"
+          ? (updater as (current: RelayClientState) => RelayClientState)(current)
+          : updater;
+      return sanitizeRelayClientState(nextState, devicePlatform);
+    });
   };
 
   const refreshWorkspace = async () => {
@@ -904,18 +1020,35 @@ export function App() {
         }
       ]);
       setActiveTabId(tab.id);
+      return tab;
     } catch (error) {
       pushToast(getErrorMessage(error), "error");
+      return null;
     }
   };
 
   const handleConnectLocal = async (input?: ConnectLocalSessionInput) => {
+    if (localTerminalLaunch.error) {
+      pushToast(localTerminalLaunch.error, "info");
+      setView("settings");
+      return;
+    }
+
+    const resolvedInput: ConnectLocalSessionInput = {
+      ...localTerminalLaunch.connectInput,
+      ...input,
+      args: input?.args ?? localTerminalLaunch.connectInput.args,
+      label: input?.label ?? localTerminalLaunch.connectInput.label
+    };
+
     try {
       setWorkspaceMode("terminal");
       setView("sessions");
       setSessionLauncherOpen(false);
 
-      const tab = await connectLocalSession(input);
+      const tab = await connectLocalSession(
+        Object.keys(resolvedInput).length > 0 ? resolvedInput : undefined
+      );
       const pendingState = pendingTerminalStatesRef.current.get(tab.id);
       if (pendingState) {
         pendingTerminalStatesRef.current.delete(tab.id);
@@ -931,6 +1064,36 @@ export function App() {
     } catch (error) {
       pushToast(getErrorMessage(error), "error");
     }
+  };
+
+  const handleOpenRelayServerSession = async (command: string, successMessage: string) => {
+    if (!relayHostServer) {
+      pushToast("Choose a saved server to use as the relay host first.", "info");
+      return;
+    }
+
+    const tab = await handleConnect(relayHostServer.id);
+    if (!tab) {
+      return;
+    }
+
+    window.setTimeout(() => {
+      queueTerminalInput(tab.id, normalizeTerminalCommandInput(command));
+    }, 120);
+
+    pushToast(successMessage, "success");
+  };
+
+  const openRelaySetup = (serverId?: string) => {
+    if (serverId) {
+      updateRelayState((current) => ({
+        ...current,
+        hostServerId: serverId
+      }));
+    }
+
+    setRelaySetupOpen(true);
+    setView("settings");
   };
 
   const openLocalSessionPresetEditor = () => {
@@ -1013,6 +1176,297 @@ export function App() {
   const openToolUpdates = () => {
     setToolUpdatesOpen(true);
     void loadToolUpdates();
+  };
+
+  const handleExportSyncBundle = () => {
+    setSyncBusyAction("export");
+    try {
+      const exportedAt = new Date().toISOString();
+      const bundle = buildHermesSyncBundle({
+        settings: {
+          ...settings,
+          lastExportedAt: exportedAt
+        },
+        projects,
+        servers,
+        localSessionPresets,
+        localGitRepositories: settings.syncIncludesPinnedRepositories ? localGitRepositories : [],
+        terminalCommands: settings.syncIncludesCommands ? terminalCommands : []
+      });
+
+      const url = window.URL.createObjectURL(
+        new Blob([JSON.stringify(bundle, null, 2)], {
+          type: "application/json;charset=utf-8"
+        })
+      );
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `hermes-sync-${exportedAt.slice(0, 10)}.json`;
+      anchor.click();
+      window.URL.revokeObjectURL(url);
+
+      updateSettings((current) => ({
+        ...current,
+        lastExportedAt: exportedAt
+      }));
+      pushToast("Exported a Hermes sync bundle.", "success");
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
+    } finally {
+      setSyncBusyAction(null);
+    }
+  };
+
+  const handleImportSyncBundle = async (file: File) => {
+    const confirmation = window.confirm(
+      `Replace local workspaces, servers, saved terminal commands, and settings with ${file.name}? Keychain secrets remain on this device.`
+    );
+    if (!confirmation) {
+      return;
+    }
+
+    setSyncBusyAction("import");
+    try {
+      const bundle = parseHermesSyncBundle(await file.text(), devicePlatform);
+
+      if (!isTauriRuntime()) {
+        throw new Error("Workspace import is only available in the desktop runtime.");
+      }
+
+      for (const command of terminalCommands) {
+        await deleteTerminalCommand(command.id);
+      }
+
+      for (const project of projects) {
+        await deleteProject(project.id);
+      }
+
+      const projectIdMap = new Map<string, string>();
+
+      for (const project of bundle.projects) {
+        const createdProject = await createProject({
+          name: project.name,
+          description: project.description
+        });
+        projectIdMap.set(project.id, createdProject.id);
+      }
+
+      for (const server of bundle.servers) {
+        const mappedProjectId = projectIdMap.get(server.projectId);
+        if (!mappedProjectId) {
+          continue;
+        }
+
+        await createServer({
+          projectId: mappedProjectId,
+          name: server.name,
+          hostname: server.hostname,
+          port: server.port,
+          username: server.username,
+          authKind: server.authKind,
+          credentialId: null,
+          credentialName: server.credentialName ?? "",
+          credentialSecret: "",
+          isFavorite: server.isFavorite,
+          tmuxSession: server.tmuxSession,
+          useTmux: server.useTmux,
+          notes: server.notes
+        });
+      }
+
+      for (const command of bundle.terminalCommands) {
+        await createTerminalCommand({
+          name: command.name,
+          command: command.command
+        });
+      }
+
+      setLocalSessionPresets(bundle.localSessionPresets);
+      setLocalGitRepositories(bundle.localGitRepositories);
+      updateSettings({
+        ...bundle.settings,
+        lastImportedAt: new Date().toISOString()
+      });
+
+      await refreshWorkspace();
+      await loadSavedTerminalCommands();
+      pushToast("Imported settings and local workspace bundle.", "success");
+    } catch (error) {
+      pushToast(getErrorMessage(error), "error");
+    } finally {
+      setSyncBusyAction(null);
+    }
+  };
+
+  const applyRelaySession = (session: RelayWorkspaceSession, relayUrl: string) => {
+    updateRelayState((current) => ({
+      ...current,
+      advancedRelayUrl: current.advancedRelayUrl || normalizeRelayUrl(relayUrl),
+      workspaceName: session.workspace.name,
+      workspaceId: session.workspace.id,
+      relayId: session.relayId,
+      currentDeviceId: session.currentDeviceId,
+      currentDeviceRole: session.currentDeviceRole,
+      adminToken: session.adminToken,
+      devices: session.workspace.devices,
+      lastConnectedAt: new Date().toISOString(),
+      lastError: null
+    }));
+  };
+
+  const handleCheckRelayHealth = async () => {
+    const relayUrl = normalizeRelayUrl(relayUrls.primary);
+    if (!relayUrl) {
+      pushToast("Choose a relay host server first.", "info");
+      return;
+    }
+
+    setRelayBusyAction("health");
+    try {
+      const health = await getRelayHealth(relayUrl);
+      updateRelayState((current) => ({
+        ...current,
+        relayId: health.relayId,
+        lastError: null
+      }));
+      pushToast(`Relay ${health.relayId.slice(0, 8)} is reachable.`, "success");
+    } catch (error) {
+      updateRelayState((current) => ({
+        ...current,
+        lastError: getErrorMessage(error)
+      }));
+      pushToast(getErrorMessage(error), "error");
+    } finally {
+      setRelayBusyAction(null);
+    }
+  };
+
+  const handleBootstrapRelayWorkspace = async () => {
+    const relayUrl = normalizeRelayUrl(relayUrls.primary);
+    if (!relayUrl) {
+      pushToast("Choose a relay host server first.", "info");
+      return;
+    }
+    if (!relayState.workspaceName.trim()) {
+      pushToast("Enter a relay workspace name.", "info");
+      return;
+    }
+    if (!relayState.deviceName.trim()) {
+      pushToast("Enter a device name.", "info");
+      return;
+    }
+
+    setRelayBusyAction("bootstrap");
+    try {
+      const session = await bootstrapRelayWorkspace(relayUrl, {
+        workspaceName: relayState.workspaceName,
+        deviceName: relayState.deviceName,
+        devicePlatform: devicePlatform
+      });
+      applyRelaySession(session, relayUrl);
+      pushToast("Connected as the relay master device.", "success");
+    } catch (error) {
+      updateRelayState((current) => ({
+        ...current,
+        lastError: getErrorMessage(error)
+      }));
+      pushToast(getErrorMessage(error), "error");
+    } finally {
+      setRelayBusyAction(null);
+    }
+  };
+
+  const handleJoinRelayWorkspace = async () => {
+    const relayUrl = normalizeRelayUrl(relayUrls.primary);
+    if (!relayUrl) {
+      pushToast("Choose a relay host server first.", "info");
+      return;
+    }
+    if (!relayState.workspaceId?.trim()) {
+      pushToast("Enter a relay workspace ID to join.", "info");
+      return;
+    }
+    if (!relayState.adminToken?.trim()) {
+      pushToast("Enter the relay admin token from the master device.", "info");
+      return;
+    }
+    if (!relayState.deviceName.trim()) {
+      pushToast("Enter a device name.", "info");
+      return;
+    }
+
+    setRelayBusyAction("join");
+    try {
+      const session = await joinRelayWorkspace(relayUrl, {
+        workspaceId: relayState.workspaceId,
+        adminToken: relayState.adminToken,
+        deviceName: relayState.deviceName,
+        devicePlatform: devicePlatform
+      });
+      applyRelaySession(session, relayUrl);
+      pushToast("Joined the relay workspace.", "success");
+    } catch (error) {
+      updateRelayState((current) => ({
+        ...current,
+        lastError: getErrorMessage(error)
+      }));
+      pushToast(getErrorMessage(error), "error");
+    } finally {
+      setRelayBusyAction(null);
+    }
+  };
+
+  const handleRefreshRelayWorkspace = async () => {
+    const relayUrl = normalizeRelayUrl(relayUrls.primary);
+    if (!relayUrl || !relayState.workspaceId || !relayState.currentDeviceId) {
+      pushToast("Connect this device to a relay workspace first.", "info");
+      return;
+    }
+
+    setRelayBusyAction("refresh");
+    try {
+      const session = await inspectRelayWorkspace(relayUrl, {
+        workspaceId: relayState.workspaceId,
+        deviceId: relayState.currentDeviceId,
+        adminToken: relayState.adminToken
+      });
+      applyRelaySession(session, relayUrl);
+      pushToast("Refreshed relay workspace state.", "success");
+    } catch (error) {
+      updateRelayState((current) => ({
+        ...current,
+        lastError: getErrorMessage(error)
+      }));
+      pushToast(getErrorMessage(error), "error");
+    } finally {
+      setRelayBusyAction(null);
+    }
+  };
+
+  const handleRevokeRelayDevice = async (deviceId: string) => {
+    if (!relayState.workspaceId || !relayState.adminToken) {
+      pushToast("Only the relay master device can revoke linked devices.", "info");
+      return;
+    }
+
+    setRelayBusyAction("revoke");
+    try {
+      const session = await revokeRelayDevice(normalizeRelayUrl(relayUrls.primary), {
+        workspaceId: relayState.workspaceId,
+        adminToken: relayState.adminToken,
+        deviceId
+      });
+      applyRelaySession(session, relayUrls.primary);
+      pushToast("Revoked linked device.", "success");
+    } catch (error) {
+      updateRelayState((current) => ({
+        ...current,
+        lastError: getErrorMessage(error)
+      }));
+      pushToast(getErrorMessage(error), "error");
+    } finally {
+      setRelayBusyAction(null);
+    }
   };
 
   const handleBrowseLocalSessionPresetPath = async () => {
@@ -1845,6 +2299,8 @@ export function App() {
         ? "Git"
       : view === "files"
         ? "Files"
+      : view === "settings"
+        ? "Settings"
       : view === "keychain"
         ? "Keychain"
         : "Dashboard";
@@ -1868,6 +2324,8 @@ export function App() {
               : `${filteredGitRepositories.length} local repo${filteredGitRepositories.length === 1 ? "" : "s"} pinned.`
         : view === "files"
           ? `${servers.length} saved server${servers.length === 1 ? "" : "s"} plus local drives available for inline browsing.`
+        : view === "settings"
+          ? `${relayHostServer ? `${serverDisplayLabel(relayHostServer)} relay host / ` : ""}${relayState.currentDeviceRole ? `${relayState.currentDeviceRole} device / ` : ""}${localLauncherSummary} launcher / ${settings.terminalFontSize}px terminal text`
         : view === "keychain"
           ? `${filteredKeychainItems.length} saved credential${filteredKeychainItems.length === 1 ? "" : "s"}`
           : loading
@@ -1895,7 +2353,27 @@ export function App() {
   });
 
   return (
-    <main className="app-shell" style={{ ["--accent" as string]: noxTheme.colors.accent }}>
+    <main
+      className="app-shell"
+      style={{
+        colorScheme: activeTheme.colorScheme,
+        ["--bg" as string]: activeTheme.app.bg,
+        ["--bg-rail" as string]: activeTheme.app.bgRail,
+        ["--bg-panel" as string]: activeTheme.app.bgPanel,
+        ["--bg-panel-2" as string]: activeTheme.app.bgPanel2,
+        ["--bg-panel-3" as string]: activeTheme.app.bgPanel3,
+        ["--bg-input" as string]: activeTheme.app.bgInput,
+        ["--text" as string]: activeTheme.app.text,
+        ["--text-soft" as string]: activeTheme.app.textSoft,
+        ["--text-faint" as string]: activeTheme.app.textFaint,
+        ["--border" as string]: activeTheme.app.border,
+        ["--border-strong" as string]: activeTheme.app.borderStrong,
+        ["--accent" as string]: activeTheme.app.accent,
+        ["--accent-ink" as string]: activeTheme.app.accentInk,
+        ["--success" as string]: activeTheme.app.success,
+        ["--danger" as string]: activeTheme.app.danger
+      }}
+    >
       <AppRail onNavigate={setView} view={view} />
 
       <section className="main-panel main-panel--full">
@@ -2103,6 +2581,8 @@ export function App() {
 
         <AppStage
           activeTabId={activeTabId}
+          activeTheme={activeTheme}
+          devicePlatform={devicePlatform}
           favoriteServers={favoriteServers}
           gitRepositories={gitRepositories}
           filteredKeychainItems={filteredKeychainItems}
@@ -2122,6 +2602,9 @@ export function App() {
           gitHubSetupRequest={gitHubSetupRequest}
           gitHubSession={gitHubSession}
           gitLoading={gitLoading}
+          localLauncherSummary={localLauncherSummary}
+          relayBusyAction={relayBusyAction}
+          relayState={relayState}
           onAddGitRepository={() => void handleAddGitRepository()}
           onCheckoutGitBranch={(repositoryId, branchName) =>
             void handleCheckoutGitBranch(repositoryId, branchName)
@@ -2137,10 +2620,31 @@ export function App() {
           onCreateProject={openCreateProject}
           onCreateGitBranch={(repositoryId) => void handleCreateGitBranch(repositoryId)}
           onCreateServer={openCreateServer}
+          onCustomTerminalArgsChange={(value) =>
+            updateSettings((current) => ({
+              ...current,
+              customTerminalArgs: value
+            }))
+          }
+          onCustomTerminalLabelChange={(value) =>
+            updateSettings((current) => ({
+              ...current,
+              customTerminalLabel: value
+            }))
+          }
+          onCustomTerminalProgramChange={(value) =>
+            updateSettings((current) => ({
+              ...current,
+              customTerminalProgram: value
+            }))
+          }
           onCopyPublicKey={(id) => void handleCopyKeychainPublicKey(id)}
           copyingPublicKeyId={copyingPublicKeyId}
           onDeleteKeychainItem={(id) => void handleDeleteKeychainItem(id)}
           onEditServer={openEditServerById}
+          onOpenRelaySetup={() => openRelaySetup()}
+          onOpenRelaySetupFromServer={(serverId) => openRelaySetup(serverId)}
+          onExportSyncBundle={handleExportSyncBundle}
           onExit={handleExit}
           activeTerminalLabel={activeTerminalLabel}
           onGitBranchNameChange={setGitBranchName}
@@ -2151,6 +2655,7 @@ export function App() {
           onCreateTerminalCommand={(input) => void handleCreateTerminalCommand(input)}
           onDeleteTerminalCommand={(id) => void handleDeleteTerminalCommand(id)}
           onInput={queueTerminalInput}
+          onImportSyncBundle={(file) => void handleImportSyncBundle(file)}
           onDisconnectGitHub={() => void handleDisconnectGitHub()}
           onSignInGitHubWithToken={(token) => void handleSignInGitHubWithToken(token)}
           onNewTab={view === "sessions" ? () => setSessionLauncherOpen(true) : tabs.length > 0 ? () => void handleOpenSiblingTab() : undefined}
@@ -2163,11 +2668,24 @@ export function App() {
           onOpenPresetEditor={openLocalSessionPresetEditor}
           onOpenToolUpdates={openToolUpdates}
           onRefreshTmux={() => selectedServerId && void refreshTmuxSessions(selectedServerId)}
+          onRefreshRelayWorkspace={() => void handleRefreshRelayWorkspace()}
           onRefreshGitHubRepositories={() => void loadGitHubOwnedRepositories()}
           onRefreshGitRepositories={() => void refreshGitRepositories()}
           onRemoveGitRepository={handleRemoveGitRepository}
           onRemoveLocalPreset={handleRemoveLocalPreset}
           onRunTerminalCommand={handleRunTerminalCommand}
+          onSyncIncludesCommandsChange={(value) =>
+            updateSettings((current) => ({
+              ...current,
+              syncIncludesCommands: value
+            }))
+          }
+          onSyncIncludesPinnedRepositoriesChange={(value) =>
+            updateSettings((current) => ({
+              ...current,
+              syncIncludesPinnedRepositories: value
+            }))
+          }
           onRenameKeychainItem={(item) => {
             setCreatingKeychainItem(false);
             setCreatingLocalSshKey(false);
@@ -2183,9 +2701,28 @@ export function App() {
           onSelectServer={handleSelectServer}
           onSelectTab={handleOpenTerminalSession}
           onStartLocalSession={() => void handleConnectLocal()}
+          onTerminalFontSizeChange={(value) =>
+            updateSettings((current) => ({
+              ...current,
+              terminalFontSize: value
+            }))
+          }
+          onTerminalProfileChange={(profileId) =>
+            updateSettings((current) => ({
+              ...current,
+              terminalProfileId: profileId
+            }))
+          }
+          onThemeChange={(themeId) =>
+            updateSettings((current) => ({
+              ...current,
+              themeId
+            }))
+          }
           onStartGitHubSignIn={() => void handleStartGitHubSignIn()}
           onStatus={handleStatus}
           onPushGitRepository={(repositoryId) => void handlePushGitRepository(repositoryId)}
+          projectCount={projects.length}
           projectServers={projectServers}
           search={search}
           selectedGitRepositoryId={selectedGitRepositoryId}
@@ -2194,9 +2731,12 @@ export function App() {
           selectedServerId={selectedServerId}
           servers={servers}
           serverCountByProject={serverCountByProject}
+          settings={settings}
           stageClassName={`stage stage--solo ${view === "dashboard" ? "stage--dashboard" : ""}`}
+          syncBusyAction={syncBusyAction}
           tabs={tabs}
           terminalCommands={terminalCommands}
+          terminalProfiles={terminalProfiles}
           tmuxLoading={tmuxLoading}
           tmuxSessions={tmuxSessions}
           view={view}
@@ -2286,6 +2826,78 @@ export function App() {
           onRunUpdate={(toolId) => void handleRunToolUpdate(toolId)}
           tools={toolUpdates}
           updatingToolId={toolUpdateBusyId}
+        />
+      ) : null}
+
+      {relaySetupOpen ? (
+        <RelaySetupDialog
+          onBootstrapRelayWorkspace={() => void handleBootstrapRelayWorkspace()}
+          onCheckRelayHealth={() => void handleCheckRelayHealth()}
+          onClose={() => setRelaySetupOpen(false)}
+          onJoinRelayWorkspace={() => void handleJoinRelayWorkspace()}
+          onOpenRelayCheckSession={() =>
+            void handleOpenRelayServerSession(
+              buildRelayCheckCommand(relayState.installRuntime),
+              "Opened a relay prerequisite check on the selected host."
+            )
+          }
+          onOpenRelayInstallSession={() =>
+            void handleOpenRelayServerSession(
+              buildRelayInstallCommand({
+                runtime: relayState.installRuntime,
+                relayPort: relayState.relayPort
+              }),
+              "Opened a relay install session on the selected host."
+            )
+          }
+          onRefreshRelayWorkspace={() => void handleRefreshRelayWorkspace()}
+          onRelayAdminTokenChange={(value) =>
+            updateRelayState((current) => ({
+              ...current,
+              adminToken: value
+            }))
+          }
+          onRelayDeviceNameChange={(value) =>
+            updateRelayState((current) => ({
+              ...current,
+              deviceName: value
+            }))
+          }
+          onRelayHostServerChange={(serverId) =>
+            updateRelayState((current) => ({
+              ...current,
+              hostServerId: serverId || null
+            }))
+          }
+          onRelayInstallRuntimeChange={(value) =>
+            updateRelayState((current) => ({
+              ...current,
+              installRuntime: value
+            }))
+          }
+          onRelayUrlChange={(value) =>
+            updateRelayState((current) => ({
+              ...current,
+              advancedRelayUrl: value
+            }))
+          }
+          onRelayWorkspaceIdChange={(value) =>
+            updateRelayState((current) => ({
+              ...current,
+              workspaceId: value
+            }))
+          }
+          onRelayWorkspaceNameChange={(value) =>
+            updateRelayState((current) => ({
+              ...current,
+              workspaceName: value
+            }))
+          }
+          onRevokeRelayDevice={(deviceId) => void handleRevokeRelayDevice(deviceId)}
+          platform={devicePlatform}
+          relayBusyAction={relayBusyAction}
+          relayState={relayState}
+          servers={servers}
         />
       ) : null}
 
@@ -2436,32 +3048,6 @@ function persistGitHubOwnedRepositoriesCache(cache: GitHubOwnedRepositoriesCache
   }
 
   window.localStorage.setItem(GITHUB_OWNED_REPOSITORIES_CACHE_KEY, JSON.stringify(cache));
-}
-
-function isLocalSessionPreset(value: unknown): value is LocalSessionPreset {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const candidate = value as Record<string, unknown>;
-  return (
-    typeof candidate.id === "string" &&
-    typeof candidate.name === "string" &&
-    typeof candidate.path === "string"
-  );
-}
-
-function isLocalGitRepository(value: unknown): value is LocalGitRepository {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const candidate = value as Record<string, unknown>;
-  return (
-    typeof candidate.id === "string" &&
-    typeof candidate.name === "string" &&
-    typeof candidate.path === "string"
-  );
 }
 
 function isTerminalCommandRecord(value: unknown): value is TerminalCommandRecord {

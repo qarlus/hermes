@@ -1,4 +1,4 @@
-import { Pencil, Plus, Server, TerminalSquare } from "lucide-react";
+import { Pencil, Plus, Server, ServerCog, TerminalSquare } from "lucide-react";
 import { buildSshTarget, serverDisplayLabel, type ServerRecord } from "@hermes/core";
 
 interface ServerListProps {
@@ -7,6 +7,7 @@ interface ServerListProps {
   onSelect: (serverId: string) => void;
   onConnect: (serverId: string) => void;
   onEdit: (serverId: string) => void;
+  onOpenRelaySetup?: (serverId: string) => void;
   onCreate?: () => void;
 }
 
@@ -16,6 +17,7 @@ export function ServerList({
   onSelect,
   onConnect,
   onEdit,
+  onOpenRelaySetup,
   onCreate
 }: ServerListProps) {
   if (servers.length === 0) {
@@ -79,6 +81,17 @@ export function ServerList({
               type="button"
             >
               <Pencil size={13} />
+            </button>
+            <button
+              className="ghost-button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpenRelaySetup?.(server.id);
+              }}
+              type="button"
+            >
+              <ServerCog size={14} />
+              Relay
             </button>
             <button
               className="connect-chip"

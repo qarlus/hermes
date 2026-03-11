@@ -17,10 +17,20 @@ import { HostDashboard } from "../features/dashboard/HostDashboard";
 import { FileBrowserPage } from "../features/files/FileBrowserPage";
 import { GitPage, type GitRepositoryView, type GitToolbarContext } from "../features/git/GitPage";
 import { KeychainPage } from "../features/keychain/KeychainPage";
+import { SettingsPage } from "../features/settings/SettingsPage";
 import { SessionCommandRail } from "../features/sessions/SessionCommandRail";
 import { TerminalWorkspace } from "../features/tabs/TerminalWorkspace";
 import { WorkspaceHome } from "../features/workspace/WorkspaceHome";
 import type { ViewState } from "../lib/app";
+import type {
+  DevicePlatform,
+  HermesSettings,
+  HermesThemeDefinition,
+  RelayClientState,
+  TerminalLaunchProfile,
+  TerminalLaunchProfileId,
+  HermesThemeId
+} from "../lib/settings";
 
 type AppStageProps = {
   view: ViewState;
@@ -33,6 +43,7 @@ type AppStageProps = {
   selectedServer: ServerRecord | null;
   selectedServerId: string | null;
   filteredProjects: ProjectRecord[];
+  projectCount: number;
   favoriteServers: ServerRecord[];
   servers: ServerRecord[];
   filteredKeychainItems: KeychainItemRecord[];
@@ -57,6 +68,14 @@ type AppStageProps = {
   gitHubLoading: boolean;
   gitHubRepositoryLoading: boolean;
   gitHubSearchLoading: boolean;
+  settings: HermesSettings;
+  relayState: RelayClientState;
+  devicePlatform: DevicePlatform;
+  activeTheme: HermesThemeDefinition;
+  terminalProfiles: TerminalLaunchProfile[];
+  localLauncherSummary: string;
+  syncBusyAction: "export" | "import" | null;
+  relayBusyAction: "bootstrap" | "join" | "refresh" | "revoke" | "health" | null;
   onCreateProject: () => void;
   onOpenProject: (projectId: string) => void;
   onCopyPublicKey: (id: string) => void;
@@ -91,6 +110,7 @@ type AppStageProps = {
   onConnect: (serverId: string, tmuxSession?: string) => void;
   onCreateServer: () => void;
   onEditServer: (serverId: string) => void;
+  onOpenRelaySetupFromServer?: (serverId: string) => void;
   onRefreshTmux: () => void;
   onSelectServer: (serverId: string) => void;
   onOpenTerminalSession: (tabId: string) => void;
@@ -117,6 +137,18 @@ type AppStageProps = {
   onStatus: (event: TerminalStatusEvent) => void;
   onExit: (event: TerminalExitEvent) => void;
   onStartLocalSession?: () => void;
+  onThemeChange: (themeId: HermesThemeId) => void;
+  onTerminalFontSizeChange: (value: number) => void;
+  onTerminalProfileChange: (profileId: TerminalLaunchProfileId) => void;
+  onCustomTerminalProgramChange: (value: string) => void;
+  onCustomTerminalArgsChange: (value: string) => void;
+  onCustomTerminalLabelChange: (value: string) => void;
+  onSyncIncludesCommandsChange: (value: boolean) => void;
+  onSyncIncludesPinnedRepositoriesChange: (value: boolean) => void;
+  onExportSyncBundle: () => void;
+  onImportSyncBundle: (file: File) => void;
+  onOpenRelaySetup: () => void;
+  onRefreshRelayWorkspace: () => void;
 };
 
 export function AppStage({
@@ -130,6 +162,7 @@ export function AppStage({
   selectedServer,
   selectedServerId,
   filteredProjects,
+  projectCount,
   favoriteServers,
   servers,
   filteredKeychainItems,
@@ -154,6 +187,14 @@ export function AppStage({
   gitHubLoading,
   gitHubRepositoryLoading,
   gitHubSearchLoading,
+  settings,
+  relayState,
+  devicePlatform,
+  activeTheme,
+  terminalProfiles,
+  localLauncherSummary,
+  syncBusyAction,
+  relayBusyAction,
   onCreateProject,
   onOpenProject,
   onCopyPublicKey,
@@ -188,6 +229,7 @@ export function AppStage({
   onConnect,
   onCreateServer,
   onEditServer,
+  onOpenRelaySetupFromServer,
   onRefreshTmux,
   onSelectServer,
   onOpenTerminalSession,
@@ -209,7 +251,19 @@ export function AppStage({
   onSelectTab,
   onStatus,
   onExit,
-  onStartLocalSession
+  onStartLocalSession,
+  onThemeChange,
+  onTerminalFontSizeChange,
+  onTerminalProfileChange,
+  onCustomTerminalProgramChange,
+  onCustomTerminalArgsChange,
+  onCustomTerminalLabelChange,
+  onSyncIncludesCommandsChange,
+  onSyncIncludesPinnedRepositoriesChange,
+  onExportSyncBundle,
+  onImportSyncBundle,
+  onOpenRelaySetup,
+  onRefreshRelayWorkspace
 }: AppStageProps) {
   const sessionsEmptyState = (
     <div className="workspace__empty workspace__content">
@@ -272,6 +326,7 @@ export function AppStage({
               onConnect={onConnect}
               onCreateServer={onCreateServer}
               onEditServer={onEditServer}
+              onOpenRelaySetup={onOpenRelaySetupFromServer}
               onOpenSession={onOpenTerminalSession}
               onRefreshTmux={onRefreshTmux}
               onSelectServer={onSelectServer}
@@ -343,6 +398,35 @@ export function AppStage({
             />
           ) : view === "files" ? (
             <FileBrowserPage servers={servers} />
+          ) : view === "settings" ? (
+            <SettingsPage
+              activeTheme={activeTheme}
+              commandCount={terminalCommands.length}
+              launcherSummary={localLauncherSummary}
+              localPresetCount={localSessionPresets.length}
+              onCustomTerminalArgsChange={onCustomTerminalArgsChange}
+              onCustomTerminalLabelChange={onCustomTerminalLabelChange}
+              onCustomTerminalProgramChange={onCustomTerminalProgramChange}
+              onExportBundle={onExportSyncBundle}
+              onImportBundle={onImportSyncBundle}
+              onOpenRelaySetup={onOpenRelaySetup}
+              onRefreshRelayWorkspace={onRefreshRelayWorkspace}
+              onSyncIncludesCommandsChange={onSyncIncludesCommandsChange}
+              onSyncIncludesPinnedRepositoriesChange={onSyncIncludesPinnedRepositoriesChange}
+              onTerminalFontSizeChange={onTerminalFontSizeChange}
+              onTerminalProfileChange={onTerminalProfileChange}
+              onThemeChange={onThemeChange}
+              pinnedRepositoryCount={gitRepositories.length}
+              platform={devicePlatform}
+              relayBusyAction={relayBusyAction}
+              relayState={relayState}
+              serverCount={servers.length}
+              servers={servers}
+              settings={settings}
+              syncBusyAction={syncBusyAction}
+              terminalProfiles={terminalProfiles}
+              workspaceCount={projectCount}
+            />
           ) : (
             <HostDashboard
               favoriteServers={favoriteServers}
@@ -376,6 +460,8 @@ export function AppStage({
         onResize={onResize}
         onSelectTab={onSelectTab}
         onStatus={onStatus}
+        terminalTheme={activeTheme.terminal}
+        terminalFontSize={settings.terminalFontSize}
         tabs={tabs}
         visible={view === "sessions" || (view === "workspace" && workspaceMode === "terminal")}
       />

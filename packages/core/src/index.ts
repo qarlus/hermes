@@ -74,6 +74,8 @@ export interface ConnectSessionInput {
 export interface ConnectLocalSessionInput {
   cwd?: string;
   label?: string;
+  program?: string;
+  args?: string[];
 }
 
 export type FileBrowserTargetKind = "local" | "server";

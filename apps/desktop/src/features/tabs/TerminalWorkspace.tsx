@@ -15,6 +15,30 @@ interface TerminalWorkspaceProps {
   tabs: TerminalTab[];
   activeTabId: string | null;
   visible?: boolean;
+  terminalFontSize: number;
+  terminalTheme: {
+    background: string;
+    foreground: string;
+    cursor: string;
+    cursorAccent: string;
+    selectionBackground: string;
+    black: string;
+    red: string;
+    green: string;
+    yellow: string;
+    blue: string;
+    magenta: string;
+    cyan: string;
+    white: string;
+    brightBlack: string;
+    brightRed: string;
+    brightGreen: string;
+    brightYellow: string;
+    brightBlue: string;
+    brightMagenta: string;
+    brightCyan: string;
+    brightWhite: string;
+  };
   emptyState?: ReactNode;
   rightRail?: ReactNode;
   emptyTabsLabel?: string | null;
@@ -36,6 +60,8 @@ export function TerminalWorkspace({
   tabs,
   activeTabId,
   visible = true,
+  terminalFontSize,
+  terminalTheme,
   emptyState,
   rightRail,
   emptyTabsLabel = "No active terminals",
@@ -209,6 +235,8 @@ export function TerminalWorkspace({
                   }
                 }}
                 onResize={onResize}
+                terminalFontSize={terminalFontSize}
+                terminalTheme={terminalTheme}
                 onTeardown={() => {
                   const handle = handlesRef.current.get(tab.id);
                   handlesRef.current.delete(tab.id);
@@ -245,6 +273,8 @@ function formatTabStatus(status: TerminalTab["status"]) {
 interface TerminalPaneProps {
   active: boolean;
   sessionId: string;
+  terminalFontSize: number;
+  terminalTheme: TerminalWorkspaceProps["terminalTheme"];
   onInput: (sessionId: string, data: string) => void;
   onResize: (sessionId: string, cols: number, rows: number) => void;
   onReady: (handle: TerminalHandle) => void;
@@ -254,6 +284,8 @@ interface TerminalPaneProps {
 function TerminalPane({
   active,
   sessionId,
+  terminalFontSize,
+  terminalTheme,
   onInput,
   onResize,
   onReady,
@@ -283,7 +315,7 @@ function TerminalPane({
   useEffect(() => {
     const terminal = new Terminal({
       fontFamily: '"JetBrains Mono Variable", "JetBrains Mono", monospace',
-      fontSize: 13,
+      fontSize: terminalFontSize,
       lineHeight: 1.35,
       cursorBlink: true,
       scrollOnUserInput: true,
@@ -292,29 +324,7 @@ function TerminalPane({
       smoothScrollDuration: 0,
       fastScrollSensitivity: 1,
       scrollback: 5000,
-      theme: {
-        background: "#000000",
-        foreground: "#f4f7fb",
-        cursor: "#8ed2ff",
-        cursorAccent: "#000000",
-        selectionBackground: "rgba(255, 255, 255, 0.14)",
-        black: "#000000",
-        red: "#ff7d81",
-        green: "#79f0b2",
-        yellow: "#f5d06f",
-        blue: "#8ed2ff",
-        magenta: "#cba6ff",
-        cyan: "#82e6e6",
-        white: "#f4f7fb",
-        brightBlack: "#586274",
-        brightRed: "#ff9ca0",
-        brightGreen: "#9ff7c4",
-        brightYellow: "#ffe08d",
-        brightBlue: "#bde8ff",
-        brightMagenta: "#dbb9ff",
-        brightCyan: "#9eeded",
-        brightWhite: "#ffffff"
-      }
+      theme: terminalTheme
     });
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
@@ -390,6 +400,17 @@ function TerminalPane({
       onTeardownRef.current();
     };
   }, [sessionId]);
+
+  useEffect(() => {
+    const currentHandle = handleRef.current;
+    if (!currentHandle) {
+      return;
+    }
+
+    currentHandle.terminal.options.fontSize = terminalFontSize;
+    currentHandle.terminal.options.theme = terminalTheme;
+    currentHandle.fitAddon.fit();
+  }, [terminalFontSize, terminalTheme]);
 
   useEffect(() => {
     const currentHandle = handleRef.current;

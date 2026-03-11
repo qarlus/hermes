@@ -169,6 +169,8 @@ struct ConnectSessionInput {
 struct ConnectLocalSessionInput {
     cwd: Option<String>,
     label: Option<String>,
+    program: Option<String>,
+    args: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -855,7 +857,10 @@ impl Database {
         Ok(credentials)
     }
 
-    fn create_keychain_item(&self, input: CreateKeychainItemInput) -> Result<KeychainItemRecord, String> {
+    fn create_keychain_item(
+        &self,
+        input: CreateKeychainItemInput,
+    ) -> Result<KeychainItemRecord, String> {
         let name = input.name.trim();
         if name.is_empty() {
             return Err("Credential name is required.".to_string());
@@ -863,7 +868,9 @@ impl Database {
 
         let kind = normalized_auth_kind(&input.kind)?;
         if kind == AUTH_DEFAULT {
-            return Err("Saved credentials must be either an SSH key path or password.".to_string());
+            return Err(
+                "Saved credentials must be either an SSH key path or password.".to_string(),
+            );
         }
 
         let secret = input.secret.trim();
@@ -888,7 +895,10 @@ impl Database {
         self.get_keychain_item(&id)
     }
 
-    fn create_local_ssh_key(&self, input: CreateLocalSshKeyInput) -> Result<KeychainItemRecord, String> {
+    fn create_local_ssh_key(
+        &self,
+        input: CreateLocalSshKeyInput,
+    ) -> Result<KeychainItemRecord, String> {
         let credential_name = input.name.trim();
         if credential_name.is_empty() {
             return Err("Credential name is required.".to_string());
@@ -998,7 +1008,11 @@ impl Database {
             .map_err(|error| error.to_string())
     }
 
-    fn update_keychain_item_name(&self, id: &str, name: &str) -> Result<KeychainItemRecord, String> {
+    fn update_keychain_item_name(
+        &self,
+        id: &str,
+        name: &str,
+    ) -> Result<KeychainItemRecord, String> {
         let trimmed = name.trim();
         if trimmed.is_empty() {
             return Err("Credential name is required.".to_string());
@@ -1290,12 +1304,10 @@ impl Database {
         let auth_kind = normalized_auth_kind(&input.auth_kind)?;
 
         if auth_kind == AUTH_DEFAULT {
-            let device_credential_mode = if existing
-                .is_some_and(|server| {
-                    server.auth_kind == AUTH_DEFAULT
-                        && server.device_credential_mode == DEVICE_CREDENTIAL_MODE_DISABLED
-                })
-            {
+            let device_credential_mode = if existing.is_some_and(|server| {
+                server.auth_kind == AUTH_DEFAULT
+                    && server.device_credential_mode == DEVICE_CREDENTIAL_MODE_DISABLED
+            }) {
                 DEVICE_CREDENTIAL_MODE_DISABLED.to_string()
             } else {
                 DEVICE_CREDENTIAL_MODE_AUTO.to_string()
@@ -1405,18 +1417,15 @@ impl Database {
             .map_err(|error| error.to_string())?;
 
         let rows = statement
-            .query_map(
-                params![AUTH_DEFAULT, DEVICE_CREDENTIAL_MODE_AUTO],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, u16>(3)?,
-                        row.get::<_, String>(4)?,
-                    ))
-                },
-            )
+            .query_map(params![AUTH_DEFAULT, DEVICE_CREDENTIAL_MODE_AUTO], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, u16>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })
             .map_err(|error| error.to_string())?;
 
         let mut servers = Vec::new();
@@ -1603,7 +1612,9 @@ impl Database {
 
     fn load_github_token(&self) -> Result<Option<String>, String> {
         let connection = self.connection.lock().map_err(lock_error)?;
-        if let Some(token) = self.read_setting_secret_with_connection(&connection, GITHUB_TOKEN_SETTING_KEY)? {
+        if let Some(token) =
+            self.read_setting_secret_with_connection(&connection, GITHUB_TOKEN_SETTING_KEY)?
+        {
             return Ok(Some(token));
         }
 
@@ -1614,7 +1625,11 @@ impl Database {
                     return Ok(None);
                 }
 
-                self.store_setting_secret_with_connection(&connection, GITHUB_TOKEN_SETTING_KEY, &trimmed)?;
+                self.store_setting_secret_with_connection(
+                    &connection,
+                    GITHUB_TOKEN_SETTING_KEY,
+                    &trimmed,
+                )?;
                 Ok(Some(trimmed))
             }
             Err(KeyringError::NoEntry) => Ok(None),
@@ -1742,7 +1757,10 @@ fn list_projects(state: State<'_, AppState>) -> Result<Vec<ProjectRecord>, Strin
 }
 
 #[tauri::command]
-fn create_project(state: State<'_, AppState>, input: ProjectInput) -> Result<ProjectRecord, String> {
+fn create_project(
+    state: State<'_, AppState>,
+    input: ProjectInput,
+) -> Result<ProjectRecord, String> {
     state.db.create_project(input)
 }
 
@@ -1844,7 +1862,11 @@ fn list_tmux_sessions(
         return Ok(Vec::new());
     }
 
-    let output = ssh_command_output(&state.db, &server, &["tmux", "list-sessions", "-F", "#{session_name}"])?;
+    let output = ssh_command_output(
+        &state.db,
+        &server,
+        &["tmux", "list-sessions", "-F", "#{session_name}"],
+    )?;
 
     if !output.status.success() {
         return Ok(Vec::new());
@@ -2016,7 +2038,9 @@ async fn write_file(
 }
 
 #[tauri::command]
-fn list_terminal_commands(state: State<'_, AppState>) -> Result<Vec<TerminalCommandRecord>, String> {
+fn list_terminal_commands(
+    state: State<'_, AppState>,
+) -> Result<Vec<TerminalCommandRecord>, String> {
     state.db.list_terminal_commands()
 }
 
@@ -2084,10 +2108,7 @@ async fn clone_git_repository(
 
         let target = parent.join(&target_name);
         if target.exists() {
-            return Err(format!(
-                "Clone target already exists: {}",
-                target.display()
-            ));
+            return Err(format!("Clone target already exists: {}", target.display()));
         }
 
         let output = git_command(&parent)
@@ -2120,7 +2141,10 @@ async fn find_local_github_checkouts(
 }
 
 #[tauri::command]
-async fn commit_git_repository(path: String, message: String) -> Result<GitRepositoryRecord, String> {
+async fn commit_git_repository(
+    path: String,
+    message: String,
+) -> Result<GitRepositoryRecord, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let root = resolve_git_root(&path)?;
         let trimmed_message = message.trim();
@@ -2136,7 +2160,8 @@ async fn commit_git_repository(path: String, message: String) -> Result<GitRepos
             ));
         }
 
-        let staged_output = git_command_output(&root, &["diff", "--cached", "--quiet", "--exit-code"])?;
+        let staged_output =
+            git_command_output(&root, &["diff", "--cached", "--quiet", "--exit-code"])?;
         if staged_output.status.success() {
             return Err("There are no staged changes to commit.".to_string());
         }
@@ -2267,9 +2292,7 @@ fn is_github_device_flow_available() -> bool {
 }
 
 #[tauri::command]
-fn start_github_device_flow(
-    state: State<'_, AppState>,
-) -> Result<GitHubDeviceFlowRecord, String> {
+fn start_github_device_flow(state: State<'_, AppState>) -> Result<GitHubDeviceFlowRecord, String> {
     let client_id = github_client_id()?;
     let client = github_http_client()?;
     let response = client
@@ -2326,10 +2349,7 @@ fn poll_github_device_flow(
         .header(ACCEPT, "application/json")
         .form(&[
             ("client_id", client_id.as_str()),
-            (
-                "grant_type",
-                "urn:ietf:params:oauth:grant-type:device_code",
-            ),
+            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
             ("device_code", flow.device_code.as_str()),
         ])
         .send()
@@ -2350,7 +2370,8 @@ fn poll_github_device_flow(
         Some("slow_down") => {
             let mut current_flow = state.github_device_flow.lock().map_err(lock_error)?;
             if let Some(active_flow) = current_flow.as_mut() {
-                active_flow.interval_seconds = payload.interval.unwrap_or(flow.interval_seconds + 5);
+                active_flow.interval_seconds =
+                    payload.interval.unwrap_or(flow.interval_seconds + 5);
             }
             Ok(None)
         }
@@ -2359,17 +2380,18 @@ fn poll_github_device_flow(
             *current_flow = None;
             Err("GitHub sign-in expired. Start it again.".to_string())
         }
-        Some(error) => Err(
-            payload
-                .error_description
-                .unwrap_or_else(|| error.to_string()),
-        ),
+        Some(error) => Err(payload
+            .error_description
+            .unwrap_or_else(|| error.to_string())),
         None => Ok(None),
     }
 }
 
 #[tauri::command]
-fn sign_in_github_with_token(state: State<'_, AppState>, token: String) -> Result<GitHubAuthSession, String> {
+fn sign_in_github_with_token(
+    state: State<'_, AppState>,
+    token: String,
+) -> Result<GitHubAuthSession, String> {
     let trimmed = token.trim();
     if trimmed.is_empty() {
         return Err("Enter a GitHub personal access token.".to_string());
@@ -2386,7 +2408,9 @@ fn disconnect_github(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn list_github_repositories(state: State<'_, AppState>) -> Result<Vec<GitHubRepositoryRecord>, String> {
+fn list_github_repositories(
+    state: State<'_, AppState>,
+) -> Result<Vec<GitHubRepositoryRecord>, String> {
     let token = state
         .db
         .load_github_token()?
@@ -2422,7 +2446,10 @@ fn list_github_repositories(state: State<'_, AppState>) -> Result<Vec<GitHubRepo
 }
 
 #[tauri::command]
-fn search_github_repositories(state: State<'_, AppState>, query: String) -> Result<Vec<GitHubRepositoryRecord>, String> {
+fn search_github_repositories(
+    state: State<'_, AppState>,
+    query: String,
+) -> Result<Vec<GitHubRepositoryRecord>, String> {
     let trimmed_query = query.trim();
     if trimmed_query.is_empty() {
         return Ok(Vec::new());
@@ -2473,14 +2500,17 @@ async fn get_cli_tool_update(tool_id: String) -> Result<CliToolUpdateRecord, Str
 
 #[tauri::command]
 async fn run_cli_tool_update(tool_id: String) -> Result<CliToolUpdateRecord, String> {
-    let spec = cli_tool_spec(&tool_id)
-        .ok_or_else(|| format!("Tool updater {tool_id} was not found."))?;
+    let spec =
+        cli_tool_spec(&tool_id).ok_or_else(|| format!("Tool updater {tool_id} was not found."))?;
     let update = spec
         .update
         .ok_or_else(|| format!("{} does not support quick updates.", spec.name))?;
 
     if !can_execute_program(update.program) {
-        return Err(format!("{} is not available on this device.", update.program));
+        return Err(format!(
+            "{} is not available on this device.",
+            update.program
+        ));
     }
 
     tauri::async_runtime::spawn_blocking(move || {
@@ -2499,7 +2529,11 @@ async fn run_cli_tool_update(tool_id: String) -> Result<CliToolUpdateRecord, Str
 }
 
 #[tauri::command]
-fn write_session(state: State<'_, AppState>, session_id: String, data: String) -> Result<(), String> {
+fn write_session(
+    state: State<'_, AppState>,
+    session_id: String,
+    data: String,
+) -> Result<(), String> {
     let sessions = state.sessions.lock().map_err(lock_error)?;
     let session = sessions
         .get(&session_id)
@@ -2607,8 +2641,14 @@ fn load_file_directory(
     }
 }
 
-fn load_local_file_directory(target: &FileBrowserTargetInput) -> Result<FileBrowserDirectoryRecord, String> {
-    let path = target.path.as_deref().map(str::trim).filter(|value| !value.is_empty());
+fn load_local_file_directory(
+    target: &FileBrowserTargetInput,
+) -> Result<FileBrowserDirectoryRecord, String> {
+    let path = target
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     if path.is_none() {
         let mut entries = local_drive_entries();
         sort_file_entries(&mut entries);
@@ -2648,7 +2688,10 @@ fn load_local_file_directory(target: &FileBrowserTargetInput) -> Result<FileBrow
         } else {
             "other"
         };
-        let modified_at = metadata.modified().ok().map(|value| chrono::DateTime::<Utc>::from(value).to_rfc3339());
+        let modified_at = metadata
+            .modified()
+            .ok()
+            .map(|value| chrono::DateTime::<Utc>::from(value).to_rfc3339());
         entries.push(FileBrowserEntryRecord {
             name: entry.file_name().to_string_lossy().to_string(),
             path: path.to_string_lossy().to_string(),
@@ -2672,7 +2715,9 @@ fn load_local_file_directory(target: &FileBrowserTargetInput) -> Result<FileBrow
             path: Some(directory.to_string_lossy().to_string()),
         },
         title: directory_title(&directory),
-        parent_path: directory.parent().map(|value| value.to_string_lossy().to_string()),
+        parent_path: directory
+            .parent()
+            .map(|value| value.to_string_lossy().to_string()),
         entries,
         can_write: fs::metadata(&directory)
             .map(|metadata| !metadata.permissions().readonly())
@@ -2734,7 +2779,10 @@ find . -mindepth 1 -maxdepth 1 -printf '%P\0%y\0%s\0%T@\0' 2>/dev/null
         };
         let full_path = join_remote_path(&current_path, &name);
         let size = if kind == "file" {
-            String::from_utf8_lossy(size_bytes).trim().parse::<u64>().ok()
+            String::from_utf8_lossy(size_bytes)
+                .trim()
+                .parse::<u64>()
+                .ok()
         } else {
             None
         };
@@ -2789,7 +2837,8 @@ fn load_local_file_preview(target: &FileBrowserTargetInput) -> Result<FilePrevie
         .read_to_end(&mut bytes)
         .map_err(|error| error.to_string())?;
 
-    let truncated = bytes.len() > FILE_PREVIEW_LIMIT_BYTES || metadata.len() > FILE_PREVIEW_LIMIT_BYTES as u64;
+    let truncated =
+        bytes.len() > FILE_PREVIEW_LIMIT_BYTES || metadata.len() > FILE_PREVIEW_LIMIT_BYTES as u64;
     if bytes.len() > FILE_PREVIEW_LIMIT_BYTES {
         bytes.truncate(FILE_PREVIEW_LIMIT_BYTES);
     }
@@ -2870,8 +2919,12 @@ else
 fi
 mkdir -- "$name"
 "#;
-            let output =
-                ssh_command_output_script(database, &server, script, &[path.as_str(), sanitized_name.as_str()])?;
+            let output = ssh_command_output_script(
+                database,
+                &server,
+                script,
+                &[path.as_str(), sanitized_name.as_str()],
+            )?;
             if output.status.success() {
                 Ok(())
             } else {
@@ -2910,7 +2963,8 @@ fn delete_file_entries_inner(
   rm -rf -- "$path" || exit 13
 done
 "#;
-                let output = ssh_command_output_script(database, &server, script, &[path.as_str()])?;
+                let output =
+                    ssh_command_output_script(database, &server, script, &[path.as_str()])?;
                 if !output.status.success() {
                     return Err(command_error_message(
                         &output,
@@ -2947,9 +3001,15 @@ fn transfer_file_entries_inner(
 
     match (all_local, all_remote, destination_kind) {
         (true, false, "local") => transfer_local_to_local(sources, destination, move_requested),
-        (true, false, "server") => transfer_local_to_remote(database, sources, destination, move_requested),
-        (false, true, "local") => transfer_remote_to_local(database, sources, destination, move_requested),
-        (false, true, "server") => transfer_remote_to_remote(database, sources, destination, move_requested),
+        (true, false, "server") => {
+            transfer_local_to_remote(database, sources, destination, move_requested)
+        }
+        (false, true, "local") => {
+            transfer_remote_to_local(database, sources, destination, move_requested)
+        }
+        (false, true, "server") => {
+            transfer_remote_to_remote(database, sources, destination, move_requested)
+        }
         _ => Err("Mixed file sources are not supported in one paste action.".to_string()),
     }
 }
@@ -2983,7 +3043,8 @@ fn write_file_inner(
                 join_remote_path(parent_path, &file_name)
             };
 
-            let temporary_path = std::env::temp_dir().join(format!("hermes-upload-{}", Uuid::new_v4()));
+            let temporary_path =
+                std::env::temp_dir().join(format!("hermes-upload-{}", Uuid::new_v4()));
             fs::write(&temporary_path, contents).map_err(|error| error.to_string())?;
             let transfer_result = (|| {
                 let mut command = scp_command(database, &server)?;
@@ -2993,10 +3054,7 @@ fn write_file_inner(
                 if output.status.success() {
                     Ok(())
                 } else {
-                    Err(command_error_message(
-                        &output,
-                        "Failed to upload the file.",
-                    ))
+                    Err(command_error_message(&output, "Failed to upload the file."))
                 }
             })();
             let _ = fs::remove_file(&temporary_path);
@@ -3066,14 +3124,20 @@ fn transfer_remote_to_local(
     ensure_directory_exists(&destination_directory)?;
 
     let first_server = file_target_server(database, &sources[0])?;
-    if sources.iter().any(|source| source.server_id.as_deref() != Some(first_server.id.as_str())) {
+    if sources
+        .iter()
+        .any(|source| source.server_id.as_deref() != Some(first_server.id.as_str()))
+    {
         return Err("Paste from multiple servers is not supported.".to_string());
     }
 
     let mut command = scp_command(database, &first_server)?;
     command.arg("-r");
     for source in sources {
-        command.arg(build_scp_remote_spec(&first_server, &required_file_path(source)?));
+        command.arg(build_scp_remote_spec(
+            &first_server,
+            &required_file_path(source)?,
+        ));
     }
     command.arg(destination_directory);
 
@@ -3148,7 +3212,10 @@ fn copy_or_move_local_path(
         return Err("Cannot paste a folder into itself.".to_string());
     }
     if destination_path.exists() {
-        return Err(format!("Destination already exists: {}", destination_path.display()));
+        return Err(format!(
+            "Destination already exists: {}",
+            destination_path.display()
+        ));
     }
 
     if move_requested {
@@ -3267,13 +3334,17 @@ fn local_drive_entries() -> Vec<FileBrowserEntryRecord> {
 fn sort_file_entries(entries: &mut [FileBrowserEntryRecord]) {
     entries.sort_by(|left, right| {
         if left.kind == right.kind {
-            left.name.to_ascii_lowercase().cmp(&right.name.to_ascii_lowercase())
+            left.name
+                .to_ascii_lowercase()
+                .cmp(&right.name.to_ascii_lowercase())
         } else if left.kind == "directory" {
             std::cmp::Ordering::Less
         } else if right.kind == "directory" {
             std::cmp::Ordering::Greater
         } else {
-            left.name.to_ascii_lowercase().cmp(&right.name.to_ascii_lowercase())
+            left.name
+                .to_ascii_lowercase()
+                .cmp(&right.name.to_ascii_lowercase())
         }
     });
 }
@@ -3294,7 +3365,10 @@ fn normalized_file_transfer_operation(value: &str) -> Result<&'static str, Strin
     }
 }
 
-fn file_target_server(database: &Database, target: &FileBrowserTargetInput) -> Result<ServerRecord, String> {
+fn file_target_server(
+    database: &Database,
+    target: &FileBrowserTargetInput,
+) -> Result<ServerRecord, String> {
     let server_id = target
         .server_id
         .as_deref()
@@ -3403,7 +3477,8 @@ fn ssh_command_output_script(
     args: &[&str],
 ) -> Result<std::process::Output, String> {
     let auth_secret = database.resolve_server_secret(server)?;
-    let mut command = Command::new(resolve_program_path("ssh").unwrap_or_else(|| PathBuf::from("ssh")));
+    let mut command =
+        Command::new(resolve_program_path("ssh").unwrap_or_else(|| PathBuf::from("ssh")));
     command.arg("-o").arg("BatchMode=yes");
     command.arg("-o").arg("ConnectTimeout=5");
     apply_shell_auth(&mut command, server, auth_secret.as_deref())?;
@@ -3429,21 +3504,29 @@ fn ssh_command_output_script(
 
 fn scp_command(database: &Database, server: &ServerRecord) -> Result<Command, String> {
     let auth_secret = database.resolve_server_secret(server)?;
-    let mut command = Command::new(resolve_program_path("scp").unwrap_or_else(|| PathBuf::from("scp")));
+    let mut command =
+        Command::new(resolve_program_path("scp").unwrap_or_else(|| PathBuf::from("scp")));
     if server.port != 22 {
         command.arg("-P").arg(server.port.to_string());
     }
     match server.auth_kind.as_str() {
         AUTH_SSH_KEY => {
-            let secret = auth_secret.ok_or_else(|| "Stored SSH key path was not found.".to_string())?;
+            let secret =
+                auth_secret.ok_or_else(|| "Stored SSH key path was not found.".to_string())?;
             let expanded = expand_home_path(&secret);
             if !expanded.exists() {
-                return Err(format!("SSH key path was not found: {}", expanded.display()));
+                return Err(format!(
+                    "SSH key path was not found: {}",
+                    expanded.display()
+                ));
             }
             command.arg("-i").arg(expanded);
         }
         AUTH_PASSWORD => {
-            return Err("Password-authenticated servers are not supported in the file browser yet.".to_string());
+            return Err(
+                "Password-authenticated servers are not supported in the file browser yet."
+                    .to_string(),
+            );
         }
         _ => {}
     }
@@ -3672,14 +3755,21 @@ fn spawn_wait_thread(
             sessions.remove(&session_id);
         }
 
-        let status = if exit_code == Some(0) { "closed" } else { "error" };
+        let status = if exit_code == Some(0) {
+            "closed"
+        } else {
+            "error"
+        };
         if let Ok(mut current_status) = session_status.lock() {
             *current_status = status.to_string();
         }
         append_log(
             &state.log_path,
             "spawn_wait_thread",
-            &format!("session {session_id} ended with status {status} and exit code {:?}", exit_code),
+            &format!(
+                "session {session_id} ended with status {status} and exit code {:?}",
+                exit_code
+            ),
         );
         emit_status(
             &app,
@@ -3736,7 +3826,10 @@ fn spawn_session(
         .master
         .try_clone_reader()
         .map_err(|error| error.to_string())?;
-    let writer = pair.master.take_writer().map_err(|error| error.to_string())?;
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|error| error.to_string())?;
     let writer = Arc::new(Mutex::new(writer));
 
     let process_id = child.process_id();
@@ -3815,6 +3908,33 @@ fn local_shell_command(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    let program_override = input
+        .and_then(|value| value.program.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let args_override = input
+        .and_then(|value| value.args.as_ref())
+        .cloned()
+        .unwrap_or_default();
+
+    if let Some(program) = program_override {
+        let label = label_override
+            .clone()
+            .unwrap_or_else(|| shell_label(&program));
+        let mut command = CommandBuilder::new(program);
+        for argument in args_override {
+            command.arg(argument);
+        }
+        if let Some(path) = cwd.as_ref() {
+            command.cwd(path);
+        }
+        return Ok((
+            command,
+            local_session_title(Some(label), cwd.as_deref(), "terminal"),
+            cwd.as_ref().map(|path| path.to_string_lossy().to_string()),
+        ));
+    }
 
     #[cfg(target_os = "windows")]
     {
@@ -3857,7 +3977,11 @@ fn shell_label(shell: &str) -> String {
         .to_string()
 }
 
-fn local_session_title(label_override: Option<String>, cwd: Option<&Path>, shell_label: &str) -> String {
+fn local_session_title(
+    label_override: Option<String>,
+    cwd: Option<&Path>,
+    shell_label: &str,
+) -> String {
     if let Some(label) = label_override {
         return format!("Local {label}");
     }
@@ -3949,9 +4073,7 @@ fn cli_tool_specs() -> Vec<CliToolSpec> {
 }
 
 fn cli_tool_spec(tool_id: &str) -> Option<CliToolSpec> {
-    cli_tool_specs()
-        .into_iter()
-        .find(|spec| spec.id == tool_id)
+    cli_tool_specs().into_iter().find(|spec| spec.id == tool_id)
 }
 
 fn placeholder_cli_tool_status(spec: CliToolSpec) -> CliToolUpdateRecord {
@@ -3974,7 +4096,9 @@ fn placeholder_cli_tool_status(spec: CliToolSpec) -> CliToolUpdateRecord {
 
 fn cli_tool_status(spec: CliToolSpec) -> CliToolUpdateRecord {
     let current_output = run_cli_command(spec.current_version);
-    let latest_output = spec.latest_version.and_then(|command| run_cli_command(command).ok());
+    let latest_output = spec
+        .latest_version
+        .and_then(|command| run_cli_command(command).ok());
     let installed = current_output
         .as_ref()
         .map(|output| output.status.success())
@@ -4009,9 +4133,14 @@ fn cli_tool_status(spec: CliToolSpec) -> CliToolUpdateRecord {
                 "Not installed locally on this device.".to_string(),
             )
         }
-    } else if let (Some(current), Some(latest)) = (current_version.as_deref(), latest_version.as_deref()) {
+    } else if let (Some(current), Some(latest)) =
+        (current_version.as_deref(), latest_version.as_deref())
+    {
         if compare_versions(current, latest) >= 0 {
-            ("upToDate".to_string(), "Already on the latest version.".to_string())
+            (
+                "upToDate".to_string(),
+                "Already on the latest version.".to_string(),
+            )
         } else {
             (
                 "updateAvailable".to_string(),
@@ -4056,7 +4185,9 @@ fn ensure_git_available() -> Result<(), String> {
 }
 
 fn git_command(root: &Path) -> Command {
-    let mut command = Command::new(resolve_program_path("git").unwrap_or_else(|| PathBuf::from(resolved_program("git"))));
+    let mut command = Command::new(
+        resolve_program_path("git").unwrap_or_else(|| PathBuf::from(resolved_program("git"))),
+    );
     command.env("GIT_TERMINAL_PROMPT", "0");
     command.arg("-C").arg(root);
     command.current_dir(neutral_command_cwd());
@@ -4080,7 +4211,10 @@ fn resolve_git_root(path: &str) -> Result<PathBuf, String> {
 
     let candidate = PathBuf::from(trimmed);
     if !candidate.exists() {
-        return Err(format!("Repository path was not found: {}", candidate.display()));
+        return Err(format!(
+            "Repository path was not found: {}",
+            candidate.display()
+        ));
     }
 
     if !candidate.is_dir() {
@@ -4189,7 +4323,9 @@ fn load_git_repository_from_root(root: &Path) -> Result<GitRepositoryRecord, Str
         conflicted_count: status.conflicted_count,
         clean: status.changes.is_empty(),
         last_commit_summary: recent_commits.first().map(|commit| commit.summary.clone()),
-        last_commit_relative: recent_commits.first().map(|commit| commit.relative_date.clone()),
+        last_commit_relative: recent_commits
+            .first()
+            .map(|commit| commit.relative_date.clone()),
         default_base,
         branches,
         recent_commits,
@@ -4216,8 +4352,27 @@ fn load_git_repository_change_diff(path: &str, file_path: &str) -> Result<String
         return Err(format!("Repository path was not found: {}", root.display()));
     }
 
-    let staged = git_diff_output(&root, &["diff", "--cached", "--no-ext-diff", "--no-color", "--", trimmed_file_path])?;
-    let unstaged = git_diff_output(&root, &["diff", "--no-ext-diff", "--no-color", "--", trimmed_file_path])?;
+    let staged = git_diff_output(
+        &root,
+        &[
+            "diff",
+            "--cached",
+            "--no-ext-diff",
+            "--no-color",
+            "--",
+            trimmed_file_path,
+        ],
+    )?;
+    let unstaged = git_diff_output(
+        &root,
+        &[
+            "diff",
+            "--no-ext-diff",
+            "--no-color",
+            "--",
+            trimmed_file_path,
+        ],
+    )?;
 
     let mut sections = Vec::new();
     if !staged.trim().is_empty() {
@@ -4230,8 +4385,17 @@ fn load_git_repository_change_diff(path: &str, file_path: &str) -> Result<String
         return Ok(sections.join("\n\n"));
     }
 
-    let against_head =
-        git_diff_output(&root, &["diff", "--no-ext-diff", "--no-color", "HEAD", "--", trimmed_file_path])?;
+    let against_head = git_diff_output(
+        &root,
+        &[
+            "diff",
+            "--no-ext-diff",
+            "--no-color",
+            "HEAD",
+            "--",
+            trimmed_file_path,
+        ],
+    )?;
     if !against_head.trim().is_empty() {
         return Ok(against_head);
     }
@@ -4330,7 +4494,11 @@ fn candidate_local_repository_roots() -> Vec<PathBuf> {
     roots
 }
 
-fn push_existing_directory(roots: &mut Vec<PathBuf>, seen: &mut HashSet<String>, candidate: PathBuf) {
+fn push_existing_directory(
+    roots: &mut Vec<PathBuf>,
+    seen: &mut HashSet<String>,
+    candidate: PathBuf,
+) {
     if !candidate.is_dir() {
         return;
     }
@@ -4417,7 +4585,10 @@ fn scan_for_github_checkout(
     Ok(())
 }
 
-fn matching_github_checkout(path: &Path, target_slug: &str) -> Result<Option<GitRepositoryRecord>, String> {
+fn matching_github_checkout(
+    path: &Path,
+    target_slug: &str,
+) -> Result<Option<GitRepositoryRecord>, String> {
     let snapshot = match load_git_repository(&path.to_string_lossy()) {
         Ok(snapshot) => snapshot,
         Err(_) => return Ok(None),
@@ -4494,7 +4665,9 @@ fn current_git_branch(root: &Path) -> Result<String, String> {
         return Ok("HEAD".to_string());
     }
 
-    let short_head = String::from_utf8_lossy(&head_output.stdout).trim().to_string();
+    let short_head = String::from_utf8_lossy(&head_output.stdout)
+        .trim()
+        .to_string();
     if short_head.is_empty() {
         Ok("HEAD".to_string())
     } else {
@@ -4604,13 +4777,7 @@ fn git_change_status(x: char, y: char) -> &'static str {
 }
 
 fn git_status_is_conflicted(x: char, y: char) -> bool {
-    matches!(
-        (x, y),
-        ('U', _)
-            | (_, 'U')
-            | ('A', 'A')
-            | ('D', 'D')
-    )
+    matches!((x, y), ('U', _) | (_, 'U') | ('A', 'A') | ('D', 'D'))
 }
 
 fn git_remotes(root: &Path) -> Result<Vec<GitRemoteRecord>, String> {
@@ -4622,10 +4789,18 @@ fn git_remotes(root: &Path) -> Result<Vec<GitRemoteRecord>, String> {
     let mut remotes = HashMap::<String, GitRemoteRecord>::new();
     for line in String::from_utf8_lossy(&output.stdout).lines() {
         let mut parts = line.split_whitespace();
-        let Some(name) = parts.next().map(str::trim).filter(|value| !value.is_empty()) else {
+        let Some(name) = parts
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
             continue;
         };
-        let Some(url) = parts.next().map(str::trim).filter(|value| !value.is_empty()) else {
+        let Some(url) = parts
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
             continue;
         };
         let direction = parts
@@ -4676,7 +4851,10 @@ fn git_branches(root: &Path, current_branch: &str) -> Result<Vec<GitBranchRecord
             }
 
             let head_marker = parts.next().unwrap_or("").trim();
-            let upstream = parts.next().map(str::trim).filter(|value| !value.is_empty());
+            let upstream = parts
+                .next()
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
             Some(GitBranchRecord {
                 name: name.to_string(),
                 current: head_marker == "*" || name == current_branch,
@@ -4719,7 +4897,10 @@ fn git_recent_commits(root: &Path) -> Result<Vec<GitCommitRecord>, String> {
         .collect())
 }
 
-fn git_default_base_branch(root: &Path, branches: &[GitBranchRecord]) -> Result<Option<String>, String> {
+fn git_default_base_branch(
+    root: &Path,
+    branches: &[GitBranchRecord],
+) -> Result<Option<String>, String> {
     let output = git_command_output(root, &["symbolic-ref", "refs/remotes/origin/HEAD"])?;
     if output.status.success() {
         let resolved = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -4821,10 +5002,7 @@ fn github_api_headers(token: Option<&str>) -> Result<HeaderMap, String> {
         ACCEPT,
         HeaderValue::from_static("application/vnd.github+json"),
     );
-    headers.insert(
-        USER_AGENT,
-        HeaderValue::from_static("Hermes-Desktop"),
-    );
+    headers.insert(USER_AGENT, HeaderValue::from_static("Hermes-Desktop"));
     headers.insert(
         "X-GitHub-Api-Version",
         HeaderValue::from_static(GITHUB_API_VERSION),
@@ -4906,11 +5084,14 @@ fn resolve_program_path(program: &str) -> Option<PathBuf> {
 }
 
 fn run_cli_command(command: CliToolCommand) -> Result<std::process::Output, String> {
-    Command::new(resolve_program_path(command.program).unwrap_or_else(|| PathBuf::from(resolved_program(command.program))))
-        .args(command.args)
-        .current_dir(neutral_command_cwd())
-        .output()
-        .map_err(|error| error.to_string())
+    Command::new(
+        resolve_program_path(command.program)
+            .unwrap_or_else(|| PathBuf::from(resolved_program(command.program))),
+    )
+    .args(command.args)
+    .current_dir(neutral_command_cwd())
+    .output()
+    .map_err(|error| error.to_string())
 }
 
 fn version_from_output(output: &str) -> Option<String> {
@@ -5050,18 +5231,50 @@ fn fallback_program_path(program: &str) -> Option<PathBuf> {
     }
 
     if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-        candidates.push(PathBuf::from(&local_app_data).join("Programs").join("Git").join("cmd").join(&file_name));
-        candidates.push(PathBuf::from(&local_app_data).join("Programs").join("Git").join("bin").join(&file_name));
+        candidates.push(
+            PathBuf::from(&local_app_data)
+                .join("Programs")
+                .join("Git")
+                .join("cmd")
+                .join(&file_name),
+        );
+        candidates.push(
+            PathBuf::from(&local_app_data)
+                .join("Programs")
+                .join("Git")
+                .join("bin")
+                .join(&file_name),
+        );
     }
 
     if let Some(program_files) = std::env::var_os("ProgramFiles") {
-        candidates.push(PathBuf::from(&program_files).join("Git").join("cmd").join(&file_name));
-        candidates.push(PathBuf::from(&program_files).join("Git").join("bin").join(&file_name));
+        candidates.push(
+            PathBuf::from(&program_files)
+                .join("Git")
+                .join("cmd")
+                .join(&file_name),
+        );
+        candidates.push(
+            PathBuf::from(&program_files)
+                .join("Git")
+                .join("bin")
+                .join(&file_name),
+        );
     }
 
     if let Some(program_files_x86) = std::env::var_os("ProgramFiles(x86)") {
-        candidates.push(PathBuf::from(&program_files_x86).join("Git").join("cmd").join(&file_name));
-        candidates.push(PathBuf::from(&program_files_x86).join("Git").join("bin").join(&file_name));
+        candidates.push(
+            PathBuf::from(&program_files_x86)
+                .join("Git")
+                .join("cmd")
+                .join(&file_name),
+        );
+        candidates.push(
+            PathBuf::from(&program_files_x86)
+                .join("Git")
+                .join("bin")
+                .join(&file_name),
+        );
     }
 
     candidates.into_iter().find(|candidate| candidate.exists())
@@ -5248,7 +5461,10 @@ fn ensure_column(
     Ok(())
 }
 
-fn query_servers(connection: &Connection, project_id: Option<&str>) -> Result<Vec<ServerRecord>, String> {
+fn query_servers(
+    connection: &Connection,
+    project_id: Option<&str>,
+) -> Result<Vec<ServerRecord>, String> {
     let sql = if project_id.is_some() {
         format!(
             "{} WHERE hosts.project_id = ?1 ORDER BY hosts.updated_at DESC, hosts.name COLLATE NOCASE ASC",
@@ -5261,7 +5477,9 @@ fn query_servers(connection: &Connection, project_id: Option<&str>) -> Result<Ve
         )
     };
 
-    let mut statement = connection.prepare(&sql).map_err(|error| error.to_string())?;
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(|error| error.to_string())?;
     let rows = if let Some(project_id) = project_id {
         statement
             .query_map([project_id], map_server_row)
@@ -5366,7 +5584,9 @@ fn resolve_device_ssh_key_path(
         return Ok(None);
     }
 
-    Ok(parse_identity_file_from_ssh_config_output(&String::from_utf8_lossy(&output.stdout)))
+    Ok(parse_identity_file_from_ssh_config_output(
+        &String::from_utf8_lossy(&output.stdout),
+    ))
 }
 
 fn parse_identity_file_from_ssh_config_output(output: &str) -> Option<String> {
@@ -5438,10 +5658,14 @@ fn apply_connect_auth(
 
     match server.auth_kind.as_str() {
         AUTH_SSH_KEY => {
-            let secret = auth_secret.ok_or_else(|| "Stored SSH key path was not found.".to_string())?;
+            let secret =
+                auth_secret.ok_or_else(|| "Stored SSH key path was not found.".to_string())?;
             let expanded = expand_home_path(secret);
             if !expanded.exists() {
-                return Err(format!("SSH key path was not found: {}", expanded.display()));
+                return Err(format!(
+                    "SSH key path was not found: {}",
+                    expanded.display()
+                ));
             }
             command.arg("-i");
             command.arg(expanded.to_string_lossy().to_string());
@@ -5472,17 +5696,24 @@ fn apply_shell_auth(
 
     match server.auth_kind.as_str() {
         AUTH_SSH_KEY => {
-            let secret = auth_secret.ok_or_else(|| "Stored SSH key path was not found.".to_string())?;
+            let secret =
+                auth_secret.ok_or_else(|| "Stored SSH key path was not found.".to_string())?;
             let expanded = expand_home_path(secret);
             if !expanded.exists() {
-                return Err(format!("SSH key path was not found: {}", expanded.display()));
+                return Err(format!(
+                    "SSH key path was not found: {}",
+                    expanded.display()
+                ));
             }
             command
                 .arg("-i")
                 .arg(expanded.to_string_lossy().to_string());
         }
         AUTH_PASSWORD => {
-            return Err("Password-authenticated servers do not support background tmux listing yet.".to_string());
+            return Err(
+                "Password-authenticated servers do not support background tmux listing yet."
+                    .to_string(),
+            );
         }
         _ => {}
     }
@@ -5581,12 +5812,7 @@ fn append_log(path: &Path, scope: &str, message: &str) {
         let _ = fs::create_dir_all(parent);
     }
 
-    let line = format!(
-        "{} [{}] {}\n",
-        Utc::now().to_rfc3339(),
-        scope,
-        message
-    );
+    let line = format!("{} [{}] {}\n", Utc::now().to_rfc3339(), scope, message);
     let _ = fs::OpenOptions::new()
         .create(true)
         .append(true)

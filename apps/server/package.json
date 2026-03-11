@@ -3,7 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "dependencies": {
+    "@hermes/sync": "workspace:*"
+  },
   "scripts": {
+    "start": "bun run src/index.ts",
     "typecheck": "tsc --project tsconfig.json --noEmit"
   }
 }

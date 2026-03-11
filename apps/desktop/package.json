@@ -8,6 +8,7 @@
     "@fontsource-variable/manrope": "^5.1.1",
     "@hermes/core": "workspace:*",
     "@hermes/db": "workspace:*",
+    "@hermes/sync": "workspace:*",
     "@hermes/ui": "workspace:*",
     "@tauri-apps/api": "^2.2.0",
     "@tauri-apps/plugin-dialog": "^2.2.0",
