@@ -24,6 +24,7 @@ use reqwest::{
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tauri::{Emitter, Manager, State};
 use uuid::Uuid;
 
@@ -155,6 +156,26 @@ struct ServerRecord {
     notes: String,
     created_at: String,
     updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RelayHostInspectionRecord {
+    server_id: String,
+    git_installed: bool,
+    docker_installed: bool,
+    apple_container_installed: bool,
+    tailscale_installed: bool,
+    tailscale_connected: bool,
+    tailscale_ipv4: Option<String>,
+    tailscale_dns_name: Option<String>,
+    relay_installed: bool,
+    relay_running: bool,
+    relay_healthy: bool,
+    relay_version: Option<String>,
+    relay_id: Option<String>,
+    suggested_relay_urls: Vec<String>,
+    suggested_relay_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1886,6 +1907,69 @@ fn list_tmux_sessions(
 }
 
 #[tauri::command]
+fn inspect_relay_host(
+    state: State<'_, AppState>,
+    server_id: String,
+) -> Result<RelayHostInspectionRecord, String> {
+    let server = state.db.get_server(&server_id)?;
+    if server.auth_kind == AUTH_PASSWORD {
+        return Err(
+            "Relay host inspection currently requires default or SSH key authentication."
+                .to_string(),
+        );
+    }
+
+    let script = r#"#!/bin/sh
+set +e
+if command -v git >/dev/null 2>&1; then echo "GIT_INSTALLED=1"; else echo "GIT_INSTALLED=0"; fi
+if command -v docker >/dev/null 2>&1; then echo "DOCKER_INSTALLED=1"; else echo "DOCKER_INSTALLED=0"; fi
+if command -v container >/dev/null 2>&1; then echo "APPLE_CONTAINER_INSTALLED=1"; else echo "APPLE_CONTAINER_INSTALLED=0"; fi
+if command -v docker >/dev/null 2>&1; then
+  if docker ps -a --filter name=^/hermes-relay$ --format '{{.Names}}' 2>/dev/null | grep -q '^hermes-relay$'; then
+    echo "RELAY_INSTALLED=1"
+  else
+    echo "RELAY_INSTALLED=0"
+  fi
+  if docker ps --filter name=^/hermes-relay$ --format '{{.Names}}' 2>/dev/null | grep -q '^hermes-relay$'; then
+    echo "RELAY_RUNNING=1"
+    echo "__RELAY_HEALTH_JSON_BEGIN__"
+    curl -fsS http://127.0.0.1:8787/health 2>/dev/null || true
+    echo
+    echo "__RELAY_HEALTH_JSON_END__"
+  else
+    echo "RELAY_RUNNING=0"
+  fi
+else
+  echo "RELAY_INSTALLED=0"
+  echo "RELAY_RUNNING=0"
+fi
+if command -v tailscale >/dev/null 2>&1; then
+  echo "TAILSCALE_INSTALLED=1"
+  echo "TAILSCALE_IPV4=$(tailscale ip -4 2>/dev/null | head -n 1)"
+  echo "__TAILSCALE_JSON_BEGIN__"
+  tailscale status --json 2>/dev/null || true
+  echo
+  echo "__TAILSCALE_JSON_END__"
+else
+  echo "TAILSCALE_INSTALLED=0"
+  echo "TAILSCALE_IPV4="
+fi
+"#;
+
+    let output = ssh_command_output_script(&state.db, &server, script, &[])?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "Relay host inspection failed.".to_string()
+        } else {
+            stderr
+        });
+    }
+
+    parse_relay_host_inspection(&server_id, &String::from_utf8_lossy(&output.stdout))
+}
+
+#[tauri::command]
 fn connect_session(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -3550,6 +3634,141 @@ fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
+fn parse_relay_host_inspection(
+    server_id: &str,
+    stdout: &str,
+) -> Result<RelayHostInspectionRecord, String> {
+    let mut git_installed = false;
+    let mut docker_installed = false;
+    let mut apple_container_installed = false;
+    let mut tailscale_installed = false;
+    let mut tailscale_ipv4: Option<String> = None;
+    let mut tailscale_json = String::new();
+    let mut relay_health_json = String::new();
+    let mut relay_installed = false;
+    let mut relay_running = false;
+    let mut in_tailscale_json = false;
+    let mut in_relay_health_json = false;
+
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed == "__TAILSCALE_JSON_BEGIN__" {
+            in_tailscale_json = true;
+            continue;
+        }
+        if trimmed == "__TAILSCALE_JSON_END__" {
+            in_tailscale_json = false;
+            continue;
+        }
+        if trimmed == "__RELAY_HEALTH_JSON_BEGIN__" {
+            in_relay_health_json = true;
+            continue;
+        }
+        if trimmed == "__RELAY_HEALTH_JSON_END__" {
+            in_relay_health_json = false;
+            continue;
+        }
+
+        if in_tailscale_json {
+            tailscale_json.push_str(line);
+            tailscale_json.push('\n');
+            continue;
+        }
+        if in_relay_health_json {
+            relay_health_json.push_str(line);
+            relay_health_json.push('\n');
+            continue;
+        }
+
+        if let Some(value) = trimmed.strip_prefix("GIT_INSTALLED=") {
+            git_installed = value == "1";
+        } else if let Some(value) = trimmed.strip_prefix("DOCKER_INSTALLED=") {
+            docker_installed = value == "1";
+        } else if let Some(value) = trimmed.strip_prefix("APPLE_CONTAINER_INSTALLED=") {
+            apple_container_installed = value == "1";
+        } else if let Some(value) = trimmed.strip_prefix("RELAY_INSTALLED=") {
+            relay_installed = value == "1";
+        } else if let Some(value) = trimmed.strip_prefix("RELAY_RUNNING=") {
+            relay_running = value == "1";
+        } else if let Some(value) = trimmed.strip_prefix("TAILSCALE_INSTALLED=") {
+            tailscale_installed = value == "1";
+        } else if let Some(value) = trimmed.strip_prefix("TAILSCALE_IPV4=") {
+            let candidate = value.trim();
+            if !candidate.is_empty() {
+                tailscale_ipv4 = Some(candidate.to_string());
+            }
+        }
+    }
+
+    let mut tailscale_connected = false;
+    let mut tailscale_dns_name = None;
+    let mut relay_healthy = false;
+    let mut relay_version = None;
+    let mut relay_id = None;
+
+    if tailscale_installed && !tailscale_json.trim().is_empty() {
+        if let Ok(parsed) = serde_json::from_str::<Value>(&tailscale_json) {
+            tailscale_dns_name = parsed
+                .get("Self")
+                .and_then(|value| value.get("DNSName"))
+                .and_then(Value::as_str)
+                .map(|value| value.trim_end_matches('.').to_string())
+                .filter(|value| !value.is_empty());
+
+            tailscale_connected = parsed
+                .get("BackendState")
+                .and_then(Value::as_str)
+                .map(|value| value.eq_ignore_ascii_case("Running"))
+                .unwrap_or(false)
+                || tailscale_ipv4.is_some();
+        }
+    }
+
+    let mut suggested_relay_urls = Vec::new();
+    if let Some(ipv4) = tailscale_ipv4.as_ref() {
+        suggested_relay_urls.push(format!("http://{}:8787", ipv4));
+    }
+    if let Some(dns_name) = tailscale_dns_name.as_ref() {
+        suggested_relay_urls.push(format!("http://{}:8787", dns_name));
+    }
+
+    if relay_running && !relay_health_json.trim().is_empty() {
+        if let Ok(parsed) = serde_json::from_str::<Value>(&relay_health_json) {
+            relay_healthy = parsed
+                .get("status")
+                .and_then(Value::as_str)
+                .map(|value| value.eq_ignore_ascii_case("ok"))
+                .unwrap_or(false);
+            relay_version = parsed
+                .get("version")
+                .and_then(Value::as_str)
+                .map(|value| value.to_string());
+            relay_id = parsed
+                .get("relayId")
+                .and_then(Value::as_str)
+                .map(|value| value.to_string());
+        }
+    }
+
+    Ok(RelayHostInspectionRecord {
+        server_id: server_id.to_string(),
+        git_installed,
+        docker_installed,
+        apple_container_installed,
+        tailscale_installed,
+        tailscale_connected,
+        tailscale_ipv4,
+        tailscale_dns_name,
+        relay_installed,
+        relay_running,
+        relay_healthy,
+        relay_version,
+        relay_id,
+        suggested_relay_url: suggested_relay_urls.first().cloned(),
+        suggested_relay_urls,
+    })
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -3585,6 +3804,7 @@ pub fn run() {
             update_keychain_item_name,
             delete_keychain_item,
             list_tmux_sessions,
+            inspect_relay_host,
             connect_session,
             connect_local_session,
             read_file_directory,

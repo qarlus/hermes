@@ -910,6 +910,18 @@ h3 {
   grid-template-columns: minmax(0, 1fr) 320px;
 }
 
+.workspace__body--with-rail-relay:has(.workspace-sidecar__hitbox:hover, .workspace-sidecar:hover) {
+  grid-template-columns: minmax(0, 1fr) 420px;
+}
+
+.workspace__body--with-rail-open {
+  grid-template-columns: minmax(0, 1fr) 320px;
+}
+
+.workspace__body--with-rail-open.workspace__body--with-rail-relay {
+  grid-template-columns: minmax(0, 1fr) 420px;
+}
+
 .workspace__main {
   position: relative;
   flex: 1;
@@ -970,6 +982,10 @@ h3 {
   overflow: hidden;
 }
 
+.workspace-sidecar--relay {
+  width: 420px;
+}
+
 .workspace-sidecar__hitbox {
   position: absolute;
   inset: 0 0 0 auto;
@@ -994,8 +1010,18 @@ h3 {
   transition: transform 160ms ease, opacity 120ms ease;
 }
 
+.workspace-sidecar--relay .workspace-sidecar__panel {
+  width: 420px;
+}
+
 .workspace__body--with-rail:has(.workspace-sidecar__hitbox:hover, .workspace-sidecar:hover)
   .workspace-sidecar__panel {
+  transform: translateX(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.workspace-sidecar--open .workspace-sidecar__panel {
   transform: translateX(0);
   opacity: 1;
   pointer-events: auto;
@@ -3897,13 +3923,6 @@ h3 {
   max-height: min(700px, calc(100vh - 40px));
 }
 
-.modal-card--relay-setup {
-  display: flex;
-  flex-direction: column;
-  width: min(100%, 980px);
-  max-height: min(760px, calc(100vh - 40px));
-}
-
 .modal-card__header,
 .modal-card__actions {
   display: flex;
@@ -4928,6 +4947,20 @@ button:disabled {
   gap: 12px;
 }
 
+.modal-card--relay-setup {
+  width: min(820px, calc(100vw - 40px));
+}
+
+.relay-setup-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.relay-setup-dialog .settings-card__actions {
+  align-items: stretch;
+}
+
 .relay-setup__section {
   display: flex;
   flex-direction: column;
@@ -4949,6 +4982,74 @@ button:disabled {
   margin-top: 4px;
   font-size: 11px;
   color: var(--text-soft);
+}
+
+.relay-setup-dialog__activity {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel-2);
+}
+
+.relay-setup-dialog__activity strong {
+  font-size: 13px;
+}
+
+.relay-setup-dialog__activity span,
+.relay-setup-dialog__activity small {
+  color: var(--text-soft);
+  font-size: 11px;
+}
+
+.relay-setup-dialog__activity--ready {
+  border-color: rgba(151, 212, 166, 0.32);
+}
+
+.relay-setup-dialog__activity--error {
+  border-color: rgba(255, 159, 159, 0.32);
+}
+
+.relay-setup-dialog__steps {
+  display: grid;
+  gap: 10px;
+}
+
+.relay-setup-dialog__step {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.relay-setup-dialog__step-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-soft);
+}
+
+.relay-setup-dialog__step-icon--complete {
+  border-color: rgba(151, 212, 166, 0.32);
+  color: var(--success);
+}
+
+.relay-setup-dialog__step-copy {
+  display: grid;
+  gap: 3px;
+}
+
+.relay-setup-dialog__step-copy strong {
+  font-size: 12px;
+}
+
+.relay-setup-dialog__step-copy span {
+  color: var(--text-soft);
+  font-size: 11px;
 }
 
 .files-page__toolbar,

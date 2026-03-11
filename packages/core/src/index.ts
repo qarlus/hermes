@@ -57,6 +57,24 @@ export interface ServerInput {
   notes: string;
 }
 
+export interface RelayHostInspection {
+  serverId: string;
+  gitInstalled: boolean;
+  dockerInstalled: boolean;
+  appleContainerInstalled: boolean;
+  tailscaleInstalled: boolean;
+  tailscaleConnected: boolean;
+  tailscaleIpv4: string | null;
+  tailscaleDnsName: string | null;
+  relayInstalled: boolean;
+  relayRunning: boolean;
+  relayHealthy: boolean;
+  relayVersion: string | null;
+  relayId: string | null;
+  suggestedRelayUrls: string[];
+  suggestedRelayUrl: string | null;
+}
+
 export interface TerminalTab {
   id: string;
   serverId: string;
@@ -64,6 +82,7 @@ export interface TerminalTab {
   status: "connecting" | "connected" | "closed" | "error";
   startedAt: string;
   cwd: string | null;
+  surface?: "sessions" | "relay";
 }
 
 export interface ConnectSessionInput {

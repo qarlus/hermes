@@ -37,7 +37,7 @@ type SettingsPageProps = {
   workspaceCount: number;
   serverCount: number;
   syncBusyAction: "export" | "import" | null;
-  relayBusyAction: "bootstrap" | "join" | "refresh" | "revoke" | "health" | null;
+  relayBusyAction: "refresh" | "revoke" | "health" | "inspect" | null;
   onThemeChange: (themeId: HermesThemeId) => void;
   onTerminalFontSizeChange: (value: number) => void;
   onTerminalProfileChange: (profileId: TerminalLaunchProfileId) => void;
@@ -50,6 +50,7 @@ type SettingsPageProps = {
   onImportBundle: (file: File) => void;
   onOpenRelaySetup: () => void;
   onRefreshRelayWorkspace: () => void;
+  onRevokeRelayDevice: (deviceId: string) => void;
 };
 
 const TERMINAL_SAMPLE = [
@@ -85,13 +86,15 @@ export function SettingsPage({
   onExportBundle,
   onImportBundle,
   onOpenRelaySetup,
-  onRefreshRelayWorkspace
+  onRefreshRelayWorkspace,
+  onRevokeRelayDevice
 }: SettingsPageProps) {
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const themes = getHermesThemes();
   const usesCustomLauncher = settings.terminalProfileId === "custom";
   const selectedRelayServer = servers.find((server) => server.id === relayState.hostServerId) ?? null;
-  const isRelayLinked = Boolean(relayState.workspaceId && relayState.currentDeviceId);
+  const isRelayLinked = Boolean(relayState.currentDeviceId);
+  const isRelayMaster = relayState.currentDeviceRole === "master";
 
   const handleImportChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -166,9 +169,18 @@ export function SettingsPage({
               <small>{relayState.devices.length === 0 ? "No devices linked yet" : `${relayState.devices.length} total records`}</small>
             </div>
             <div className="settings-summary-tile">
-              <span>Workspace</span>
-              <strong>{relayState.workspaceName || "Not configured"}</strong>
-              <small>{relayState.workspaceId ?? "Create or join a relay workspace from Manage Relay."}</small>
+              <span>Connection</span>
+              <strong>
+                {relayState.relayHealthy
+                  ? "Relay healthy"
+                  : relayState.hostServerId
+                    ? "Waiting for relay"
+                    : "Not configured"}
+              </strong>
+              <small>
+                {relayState.detectedRelayUrl ??
+                  "Connect a server as the relay host and Hermes will link this device automatically."}
+              </small>
             </div>
           </div>
 
@@ -190,7 +202,7 @@ export function SettingsPage({
 
           {relayState.devices.length > 0 ? (
             <div className="settings-device-list">
-              {relayState.devices.slice(0, 4).map((device) => (
+              {relayState.devices.map((device) => (
                 <div className="settings-device-row" key={device.id}>
                   <div className="settings-device-row__body">
                     <strong>
@@ -202,6 +214,11 @@ export function SettingsPage({
                       {device.revokedAt ? " / revoked" : ""}
                     </span>
                   </div>
+                  {isRelayMaster && device.id !== relayState.currentDeviceId && !device.revokedAt ? (
+                    <button className="ghost-button" disabled={relayBusyAction !== null} onClick={() => onRevokeRelayDevice(device.id)} type="button">
+                      {relayBusyAction === "revoke" ? "Revoking..." : "Revoke"}
+                    </button>
+                  ) : null}
                 </div>
               ))}
             </div>

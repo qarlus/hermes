@@ -145,12 +145,22 @@ export const HERMES_SETTINGS_KEY = "hermes.settings";
 export const HERMES_RELAY_STATE_KEY = "hermes.relayState";
 
 export type RelayClientState = {
+  localDeviceId: string;
   workspaceName: string;
   deviceName: string;
   hostServerId: string | null;
   installRuntime: "docker" | "appleContainer";
   relayPort: number;
   advancedRelayUrl: string;
+  detectedRelayUrl: string | null;
+  detectedRelayUrls: string[];
+  tailscaleIpv4: string | null;
+  tailscaleDnsName: string | null;
+  relayInstalled: boolean;
+  relayRunning: boolean;
+  relayHealthy: boolean;
+  relayVersion: string | null;
+  lastHostCheckAt: string | null;
   workspaceId: string | null;
   relayId: string | null;
   currentDeviceId: string | null;
@@ -517,12 +527,22 @@ export function persistHermesSettings(settings: HermesSettings) {
 
 export function createDefaultRelayClientState(platform: DevicePlatform): RelayClientState {
   return {
+    localDeviceId: createRelayLocalDeviceId(),
     workspaceName: "",
     deviceName: defaultRelayDeviceName(platform),
     hostServerId: null,
     installRuntime: "docker",
     relayPort: 8787,
     advancedRelayUrl: "",
+    detectedRelayUrl: null,
+    detectedRelayUrls: [],
+    tailscaleIpv4: null,
+    tailscaleDnsName: null,
+    relayInstalled: false,
+    relayRunning: false,
+    relayHealthy: false,
+    relayVersion: null,
+    lastHostCheckAt: null,
     workspaceId: null,
     relayId: null,
     currentDeviceId: null,
@@ -614,6 +634,10 @@ export function sanitizeRelayClientState(
   return {
     workspaceName:
       typeof candidate.workspaceName === "string" ? candidate.workspaceName : defaults.workspaceName,
+    localDeviceId:
+      typeof candidate.localDeviceId === "string" && candidate.localDeviceId.trim()
+        ? candidate.localDeviceId
+        : defaults.localDeviceId,
     deviceName:
       typeof candidate.deviceName === "string" && candidate.deviceName.trim()
         ? candidate.deviceName
@@ -631,6 +655,41 @@ export function sanitizeRelayClientState(
       typeof candidate.advancedRelayUrl === "string"
         ? candidate.advancedRelayUrl
         : defaults.advancedRelayUrl,
+    detectedRelayUrl:
+      typeof candidate.detectedRelayUrl === "string" || candidate.detectedRelayUrl === null
+        ? candidate.detectedRelayUrl
+        : defaults.detectedRelayUrl,
+    detectedRelayUrls: Array.isArray(candidate.detectedRelayUrls)
+      ? candidate.detectedRelayUrls.filter((value): value is string => typeof value === "string")
+      : defaults.detectedRelayUrls,
+    tailscaleIpv4:
+      typeof candidate.tailscaleIpv4 === "string" || candidate.tailscaleIpv4 === null
+        ? candidate.tailscaleIpv4
+        : defaults.tailscaleIpv4,
+    tailscaleDnsName:
+      typeof candidate.tailscaleDnsName === "string" || candidate.tailscaleDnsName === null
+        ? candidate.tailscaleDnsName
+        : defaults.tailscaleDnsName,
+    relayInstalled:
+      typeof candidate.relayInstalled === "boolean"
+        ? candidate.relayInstalled
+        : defaults.relayInstalled,
+    relayRunning:
+      typeof candidate.relayRunning === "boolean"
+        ? candidate.relayRunning
+        : defaults.relayRunning,
+    relayHealthy:
+      typeof candidate.relayHealthy === "boolean"
+        ? candidate.relayHealthy
+        : defaults.relayHealthy,
+    relayVersion:
+      typeof candidate.relayVersion === "string" || candidate.relayVersion === null
+        ? candidate.relayVersion
+        : defaults.relayVersion,
+    lastHostCheckAt:
+      typeof candidate.lastHostCheckAt === "string" || candidate.lastHostCheckAt === null
+        ? candidate.lastHostCheckAt
+        : defaults.lastHostCheckAt,
     workspaceId:
       typeof candidate.workspaceId === "string" || candidate.workspaceId === null
         ? candidate.workspaceId
@@ -973,6 +1032,14 @@ function isRelayWorkspaceDeviceRecord(value: unknown): value is RelayWorkspaceDe
 
 function defaultRelayDeviceName(platform: DevicePlatform) {
   return `Hermes ${getDevicePlatformLabel(platform)}`;
+}
+
+function createRelayLocalDeviceId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  return `relay-device-${Math.random().toString(36).slice(2, 12)}`;
 }
 
 export function buildRelayUrls(input: {

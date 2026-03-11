@@ -61,6 +61,7 @@ import {
   getDefaultSshDirectory,
   getCliToolUpdate,
   getKeychainPublicKey,
+  inspectRelayHost,
   inspectGitRepository,
   listGitHubRepositories,
   listKeychainItems,
@@ -102,7 +103,6 @@ import {
 } from "./lib/app";
 import { isTauriRuntime } from "./lib/runtime";
 import {
-  buildRelayCheckCommand,
   buildRelayInstallCommand,
   buildRelayUrls,
   buildHermesSyncBundle,
@@ -125,10 +125,8 @@ import {
   type RelayClientState
 } from "./lib/settings";
 import {
-  bootstrapRelayWorkspace,
+  connectRelayWorkspace,
   getRelayHealth,
-  inspectRelayWorkspace,
-  joinRelayWorkspace,
   normalizeRelayUrl,
   revokeRelayDevice
 } from "./lib/relay";
@@ -246,8 +244,13 @@ export function App() {
     loadRelayClientState(devicePlatform)
   );
   const [relaySetupOpen, setRelaySetupOpen] = useState(false);
+  const [relayInstallSessionId, setRelayInstallSessionId] = useState<string | null>(null);
+  const [relayInstallState, setRelayInstallState] = useState<
+    "idle" | "installing" | "checking" | "ready" | "error"
+  >("idle");
+  const [relayInstallMessage, setRelayInstallMessage] = useState<string | null>(null);
   const [relayBusyAction, setRelayBusyAction] = useState<
-    "bootstrap" | "join" | "refresh" | "revoke" | "health" | null
+    "refresh" | "revoke" | "health" | "inspect" | null
   >(null);
   const [syncBusyAction, setSyncBusyAction] = useState<"export" | "import" | null>(null);
   const [toasts, setToasts] = useState<ToastRecord[]>([]);
@@ -257,6 +260,7 @@ export function App() {
   const pendingTerminalStatesRef = useRef<
     Map<string, Pick<TerminalStatusEvent, "status" | "message">>
   >(new Map());
+  const relayInstallWatcherRef = useRef<number | null>(null);
 
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
@@ -270,13 +274,42 @@ export function App() {
     () => tabs.find((tab) => tab.id === activeTabId) ?? null,
     [activeTabId, tabs]
   );
+  const sessionTabs = useMemo(
+    () => tabs.filter((tab) => getTerminalSurface(tab) === "sessions"),
+    [tabs]
+  );
+  const activeSessionTab = useMemo(
+    () => sessionTabs.find((tab) => tab.id === activeTabId) ?? sessionTabs.at(-1) ?? null,
+    [activeTabId, sessionTabs]
+  );
   const activeTabServer = useMemo(
     () => servers.find((server) => server.id === activeTab?.serverId) ?? null,
     [activeTab?.serverId, servers]
   );
+  const activeSessionTabServer = useMemo(
+    () => servers.find((server) => server.id === activeSessionTab?.serverId) ?? null,
+    [activeSessionTab?.serverId, servers]
+  );
+  const relayHostServer = useMemo(
+    () => servers.find((server) => server.id === relayState.hostServerId) ?? null,
+    [relayState.hostServerId, servers]
+  );
+  const relayInstallTab = useMemo(
+    () =>
+      (relayInstallSessionId
+        ? tabs.find((tab) => tab.id === relayInstallSessionId) ?? null
+        : null) ??
+      (relayHostServer
+        ? tabs.filter((tab) => tab.serverId === relayHostServer.id).at(-1) ?? null
+        : tabs.at(-1) ?? null),
+    [relayHostServer, relayInstallSessionId, tabs]
+  );
   const activeTerminalLabel = useMemo(
-    () => (activeTabServer ? buildSshTarget(activeTabServer) : activeTab?.title ?? null),
-    [activeTab?.title, activeTabServer]
+    () =>
+      activeSessionTabServer
+        ? buildSshTarget(activeSessionTabServer)
+        : activeSessionTab?.title ?? null,
+    [activeSessionTab?.title, activeSessionTabServer]
   );
 
   const serverCountByProject = useMemo(() => {
@@ -419,8 +452,8 @@ export function App() {
         .map((server) => server.id)
     );
 
-    return tabs.filter((tab) => serverIds.has(tab.serverId));
-  }, [selectedProjectId, servers, tabs]);
+    return sessionTabs.filter((tab) => serverIds.has(tab.serverId));
+  }, [selectedProjectId, servers, sessionTabs]);
 
   const selectedGitRepository = useMemo(
     () =>
@@ -438,10 +471,6 @@ export function App() {
   const localTerminalLaunch = useMemo(
     () => resolveLocalTerminalLaunch(settings, devicePlatform),
     [devicePlatform, settings]
-  );
-  const relayHostServer = useMemo(
-    () => servers.find((server) => server.id === relayState.hostServerId) ?? null,
-    [relayState.hostServerId, servers]
   );
   const relayUrls = useMemo(
     () =>
@@ -525,6 +554,15 @@ export function App() {
   useEffect(() => {
     persistRelayClientState(relayState);
   }, [relayState]);
+
+  useEffect(
+    () => () => {
+      if (relayInstallWatcherRef.current !== null) {
+        window.clearTimeout(relayInstallWatcherRef.current);
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     if (selectedGitRepositoryId && localGitRepositories.some((repo) => repo.id === selectedGitRepositoryId)) {
@@ -750,6 +788,20 @@ export function App() {
     }, TOAST_DURATION_MS);
 
     toastTimeoutsRef.current.set(id, timeoutId);
+  };
+
+  const handleRelayError = (error: unknown) => {
+    const message = getErrorMessage(error);
+    setRelayInstallState("error");
+    setRelayInstallMessage(message);
+    updateRelayState((current) => ({
+      ...current,
+      lastError: message
+    }));
+    if (!relaySetupOpen) {
+      pushToast(message, "error");
+    }
+    return message;
   };
 
   const updateSettings = (
@@ -996,16 +1048,23 @@ export function App() {
     setSelectedServerId(serverId);
   };
 
-  const handleConnect = async (serverId: string, tmuxSession?: string) => {
+  const handleConnect = async (
+    serverId: string,
+    tmuxSession?: string,
+    surface: "sessions" | "relay" = "sessions",
+    activateView = true
+  ) => {
     try {
       const server = servers.find((candidate) => candidate.id === serverId);
       if (server) {
         setSelectedProjectId(server.projectId);
         setSelectedServerId(server.id);
       }
-      setWorkspaceMode("terminal");
-      setView("sessions");
-      setSessionLauncherOpen(false);
+      if (activateView) {
+        setWorkspaceMode("terminal");
+        setView("sessions");
+        setSessionLauncherOpen(false);
+      }
 
       const tab = await connectSession({ serverId, tmuxSession });
       const pendingState = pendingTerminalStatesRef.current.get(tab.id);
@@ -1016,10 +1075,13 @@ export function App() {
         ...current,
         {
           ...tab,
+          surface,
           status: pendingState?.status ?? tab.status
         }
       ]);
-      setActiveTabId(tab.id);
+      if (activateView) {
+        setActiveTabId(tab.id);
+      }
       return tab;
     } catch (error) {
       pushToast(getErrorMessage(error), "error");
@@ -1057,6 +1119,7 @@ export function App() {
         ...current,
         {
           ...tab,
+          surface: "sessions",
           status: pendingState?.status ?? tab.status
         }
       ]);
@@ -1072,10 +1135,15 @@ export function App() {
       return;
     }
 
-    const tab = await handleConnect(relayHostServer.id);
+    const tab = await handleConnect(relayHostServer.id, undefined, "sessions", true);
     if (!tab) {
       return;
     }
+
+    setRelayInstallSessionId(tab.id);
+    setRelayInstallState("installing");
+    setRelayInstallMessage(`Install session opened on ${serverDisplayLabel(relayHostServer)}.`);
+    setRelaySetupOpen(false);
 
     window.setTimeout(() => {
       queueTerminalInput(tab.id, normalizeTerminalCommandInput(command));
@@ -1084,16 +1152,122 @@ export function App() {
     pushToast(successMessage, "success");
   };
 
+  const stopRelayInstallWatcher = () => {
+    if (relayInstallWatcherRef.current !== null) {
+      window.clearTimeout(relayInstallWatcherRef.current);
+      relayInstallWatcherRef.current = null;
+    }
+  };
+
+  const startRelayInstallWatcher = (serverId: string, attempts = 30) => {
+    stopRelayInstallWatcher();
+    setRelayInstallState("checking");
+    setRelayInstallMessage("Waiting for the host install command to finish and for the relay to come online.");
+
+    const run = async (remaining: number) => {
+      try {
+        const inspection = await inspectRelayHost(serverId);
+        const detectedRelayUrl = inspection.suggestedRelayUrl;
+        const candidateUrls = getRelayCandidateUrls(inspection.suggestedRelayUrls);
+
+        updateRelayState((current) => ({
+          ...current,
+          hostServerId: serverId,
+          advancedRelayUrl: detectedRelayUrl ?? current.advancedRelayUrl,
+          detectedRelayUrl,
+          detectedRelayUrls: inspection.suggestedRelayUrls,
+          tailscaleIpv4: inspection.tailscaleIpv4,
+          tailscaleDnsName: inspection.tailscaleDnsName,
+          relayInstalled: inspection.relayInstalled,
+          relayRunning: inspection.relayRunning,
+          relayHealthy: inspection.relayHealthy,
+          relayVersion: inspection.relayVersion,
+          relayId: inspection.relayId ?? current.relayId,
+          lastHostCheckAt: new Date().toISOString()
+        }));
+
+        if (inspection.relayHealthy && candidateUrls.length > 0) {
+          const { autoBootstrapped, health, relayUrl } = await connectRelayWithCandidates(candidateUrls);
+          setRelayInstallState("ready");
+          setRelayInstallMessage(
+            autoBootstrapped
+              ? `Relay ${health.relayId.slice(0, 8)} is live. This device is now the master.`
+              : `Relay ${health.relayId.slice(0, 8)} is live at ${relayUrl} and linked to this device.`
+          );
+          pushToast(
+            autoBootstrapped
+              ? `Relay ${health.relayId.slice(0, 8)} is live. This device is now the master.`
+              : `Relay ${health.relayId.slice(0, 8)} is live and connected.`,
+            "success"
+          );
+          stopRelayInstallWatcher();
+          return;
+        }
+      } catch {
+        // Ignore until the watcher times out.
+      }
+
+      if (remaining <= 0) {
+        stopRelayInstallWatcher();
+        setRelayInstallState("error");
+        setRelayInstallMessage(
+          "The background install session is still running or the relay is not reachable yet. Re-check the host once the command finishes."
+        );
+        pushToast("Relay install is still not reachable. Reopen the server and inspect it again once the host command finishes.", "info");
+        return;
+      }
+
+      relayInstallWatcherRef.current = window.setTimeout(() => {
+        void run(remaining - 1);
+      }, 3000);
+    };
+
+    void run(attempts);
+  };
+
+  const handleInstallRelayOnHost = async () => {
+    if (!relayHostServer) {
+      pushToast("Choose a saved server to use as the relay host first.", "info");
+      return;
+    }
+
+    setRelayInstallState("installing");
+    setRelayInstallMessage(`Queueing the install command on ${serverDisplayLabel(relayHostServer)}.`);
+    await handleOpenRelayServerSession(
+      buildRelayInstallCommand({
+        runtime: relayState.installRuntime,
+        relayPort: relayState.relayPort
+      }),
+      "Opened a relay install session on the selected host. Hermes will link this device automatically when the relay comes online."
+    );
+
+    startRelayInstallWatcher(relayHostServer.id);
+  };
+
   const openRelaySetup = (serverId?: string) => {
-    if (serverId) {
+    const targetServerId = serverId ?? relayState.hostServerId;
+    const switchedHost = Boolean(targetServerId && targetServerId !== relayState.hostServerId);
+    if (targetServerId) {
       updateRelayState((current) => ({
         ...current,
-        hostServerId: serverId
+        hostServerId: targetServerId
       }));
     }
 
     setRelaySetupOpen(true);
-    setView("settings");
+    if (switchedHost) {
+      setRelayInstallSessionId(null);
+      setRelayInstallState("idle");
+      setRelayInstallMessage(null);
+    }
+
+    if (targetServerId) {
+      void handleInspectRelayHostByServerId(targetServerId);
+    }
+  };
+
+  const handleNavigate = (nextView: ViewState) => {
+    setView(nextView);
   };
 
   const openLocalSessionPresetEditor = () => {
@@ -1314,130 +1488,211 @@ export function App() {
     }));
   };
 
+  const getRelayCandidateUrls = (urls: Array<string | null | undefined>) => {
+    const seen = new Set<string>();
+    return urls
+      .map((value) => normalizeRelayUrl(value ?? ""))
+      .filter((value) => {
+        if (!value || seen.has(value)) {
+          return false;
+        }
+        seen.add(value);
+        return true;
+      });
+  };
+
+  const connectRelayAtUrl = async (relayUrl: string) => {
+    const health = await getRelayHealth(relayUrl);
+
+    updateRelayState((current) => ({
+      ...current,
+      relayId: health.relayId,
+      lastError: null
+    }));
+
+    const wasUnlinked = !relayState.currentDeviceId;
+    const session = await connectRelayWorkspace(relayUrl, {
+      deviceId: relayState.localDeviceId,
+      deviceName: relayState.deviceName.trim(),
+      devicePlatform: devicePlatform
+    });
+    applyRelaySession(session, relayUrl);
+
+    return {
+      autoBootstrapped: wasUnlinked && session.currentDeviceRole === "master",
+      health
+    };
+  };
+
+  const connectRelayWithCandidates = async (candidateUrls: string[]) => {
+    let lastError: unknown = null;
+
+    for (const candidateUrl of candidateUrls) {
+      try {
+        const result = await connectRelayAtUrl(candidateUrl);
+        updateRelayState((current) => ({
+          ...current,
+          advancedRelayUrl: candidateUrl
+        }));
+        return {
+          ...result,
+          relayUrl: candidateUrl
+        };
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    throw lastError ?? new Error("No relay endpoint was available.");
+  };
+
   const handleCheckRelayHealth = async () => {
-    const relayUrl = normalizeRelayUrl(relayUrls.primary);
-    if (!relayUrl) {
+    const candidateUrls = getRelayCandidateUrls([
+      relayUrls.primary,
+      ...relayState.detectedRelayUrls
+    ]);
+    if (candidateUrls.length === 0) {
       pushToast("Choose a relay host server first.", "info");
       return;
     }
 
     setRelayBusyAction("health");
+    setRelayInstallState("checking");
+    setRelayInstallMessage("Checking the relay health endpoint and linking this device if it is reachable.");
     try {
-      const health = await getRelayHealth(relayUrl);
+      const { autoBootstrapped, health, relayUrl } = await connectRelayWithCandidates(candidateUrls);
+      setRelayInstallState("ready");
+      setRelayInstallMessage(
+        autoBootstrapped
+          ? `Relay ${health.relayId.slice(0, 8)} is reachable. This device is now the master.`
+          : `Relay ${health.relayId.slice(0, 8)} is reachable at ${relayUrl} and linked.`
+      );
+      pushToast(
+        autoBootstrapped
+          ? `Relay ${health.relayId.slice(0, 8)} is reachable. This device is now the master.`
+          : `Relay ${health.relayId.slice(0, 8)} is reachable.`,
+        "success"
+      );
+    } catch (error) {
+      handleRelayError(error);
+    } finally {
+      setRelayBusyAction(null);
+    }
+  };
+
+  const handleInspectRelayHost = async () => {
+    await handleInspectRelayHostByServerId(relayState.hostServerId);
+  };
+
+  const handleInspectRelayHostByServerId = async (serverId: string | null) => {
+    if (!serverId) {
+      pushToast("Choose a relay host server first.", "info");
+      return;
+    }
+
+    setRelayBusyAction("inspect");
+    setRelayInstallState("checking");
+    setRelayInstallMessage("Inspecting the selected host, checking Tailscale, and discovering the relay endpoint.");
+    try {
+      const inspectedServer = servers.find((server) => server.id === serverId) ?? null;
+      const inspection = await inspectRelayHost(serverId);
+      const detectedRelayUrl = inspection.suggestedRelayUrl;
+
       updateRelayState((current) => ({
         ...current,
-        relayId: health.relayId,
+        hostServerId: serverId,
+        advancedRelayUrl: detectedRelayUrl ?? current.advancedRelayUrl,
+        detectedRelayUrl,
+        detectedRelayUrls: inspection.suggestedRelayUrls,
+        tailscaleIpv4: inspection.tailscaleIpv4,
+        tailscaleDnsName: inspection.tailscaleDnsName,
+        relayInstalled: inspection.relayInstalled,
+        relayRunning: inspection.relayRunning,
+        relayHealthy: inspection.relayHealthy,
+        relayVersion: inspection.relayVersion,
+        relayId: inspection.relayId ?? current.relayId,
+        lastHostCheckAt: new Date().toISOString(),
         lastError: null
       }));
-      pushToast(`Relay ${health.relayId.slice(0, 8)} is reachable.`, "success");
+
+      if (!inspection.tailscaleInstalled) {
+        setRelayInstallState("error");
+        setRelayInstallMessage("Tailscale is not installed on the relay host.");
+        pushToast("Tailscale is not installed on the relay host.", "error");
+        return;
+      }
+
+      if (!inspection.tailscaleConnected || !detectedRelayUrl) {
+        setRelayInstallState("error");
+        setRelayInstallMessage("Tailscale is installed, but no reachable relay endpoint was discovered.");
+        pushToast("Tailscale is installed, but no reachable relay endpoint was discovered.", "error");
+        return;
+      }
+
+      const candidateUrls = getRelayCandidateUrls(inspection.suggestedRelayUrls);
+      if (!inspection.relayInstalled) {
+        setRelayInstallState("idle");
+        setRelayInstallMessage("Host inspection passed. Install Hermes Relay and Hermes will keep checking until it is reachable.");
+        pushToast(
+          inspectedServer
+            ? `${serverDisplayLabel(inspectedServer)} is ready for relay install.`
+            : "Host inspection passed and the server is ready for relay install.",
+          "success"
+        );
+        return;
+      }
+
+      if (!inspection.relayHealthy) {
+        setRelayInstallState("checking");
+        setRelayInstallMessage("Relay package is present on the host. Finish installation or run a relay health check once the container is ready.");
+        pushToast("Relay package detected on the selected host.", "success");
+        return;
+      }
+
+      const { autoBootstrapped, health, relayUrl } = await connectRelayWithCandidates(candidateUrls);
+      setRelayInstallState("ready");
+      setRelayInstallMessage(
+        autoBootstrapped
+          ? `Relay ${health.relayId.slice(0, 8)} is reachable. This device is now the master.`
+          : inspection.relayHealthy
+            ? `Relay already detected on this server and this device is linked.`
+            : `Host inspection completed. Hermes will use ${relayUrl}.`
+      );
+      pushToast(
+        autoBootstrapped
+          ? `Relay ${health.relayId.slice(0, 8)} is reachable. This device is now the master.`
+          : inspection.relayHealthy
+            ? `Relay already detected on this server. Using ${relayUrl}.`
+            : `Using relay endpoint ${relayUrl}.`,
+        "success"
+      );
     } catch (error) {
-      updateRelayState((current) => ({
-        ...current,
-        lastError: getErrorMessage(error)
-      }));
-      pushToast(getErrorMessage(error), "error");
-    } finally {
-      setRelayBusyAction(null);
-    }
-  };
-
-  const handleBootstrapRelayWorkspace = async () => {
-    const relayUrl = normalizeRelayUrl(relayUrls.primary);
-    if (!relayUrl) {
-      pushToast("Choose a relay host server first.", "info");
-      return;
-    }
-    if (!relayState.workspaceName.trim()) {
-      pushToast("Enter a relay workspace name.", "info");
-      return;
-    }
-    if (!relayState.deviceName.trim()) {
-      pushToast("Enter a device name.", "info");
-      return;
-    }
-
-    setRelayBusyAction("bootstrap");
-    try {
-      const session = await bootstrapRelayWorkspace(relayUrl, {
-        workspaceName: relayState.workspaceName,
-        deviceName: relayState.deviceName,
-        devicePlatform: devicePlatform
-      });
-      applyRelaySession(session, relayUrl);
-      pushToast("Connected as the relay master device.", "success");
-    } catch (error) {
-      updateRelayState((current) => ({
-        ...current,
-        lastError: getErrorMessage(error)
-      }));
-      pushToast(getErrorMessage(error), "error");
-    } finally {
-      setRelayBusyAction(null);
-    }
-  };
-
-  const handleJoinRelayWorkspace = async () => {
-    const relayUrl = normalizeRelayUrl(relayUrls.primary);
-    if (!relayUrl) {
-      pushToast("Choose a relay host server first.", "info");
-      return;
-    }
-    if (!relayState.workspaceId?.trim()) {
-      pushToast("Enter a relay workspace ID to join.", "info");
-      return;
-    }
-    if (!relayState.adminToken?.trim()) {
-      pushToast("Enter the relay admin token from the master device.", "info");
-      return;
-    }
-    if (!relayState.deviceName.trim()) {
-      pushToast("Enter a device name.", "info");
-      return;
-    }
-
-    setRelayBusyAction("join");
-    try {
-      const session = await joinRelayWorkspace(relayUrl, {
-        workspaceId: relayState.workspaceId,
-        adminToken: relayState.adminToken,
-        deviceName: relayState.deviceName,
-        devicePlatform: devicePlatform
-      });
-      applyRelaySession(session, relayUrl);
-      pushToast("Joined the relay workspace.", "success");
-    } catch (error) {
-      updateRelayState((current) => ({
-        ...current,
-        lastError: getErrorMessage(error)
-      }));
-      pushToast(getErrorMessage(error), "error");
+      handleRelayError(error);
     } finally {
       setRelayBusyAction(null);
     }
   };
 
   const handleRefreshRelayWorkspace = async () => {
-    const relayUrl = normalizeRelayUrl(relayUrls.primary);
-    if (!relayUrl || !relayState.workspaceId || !relayState.currentDeviceId) {
-      pushToast("Connect this device to a relay workspace first.", "info");
+    const candidateUrls = getRelayCandidateUrls([
+      relayUrls.primary,
+      ...relayState.detectedRelayUrls
+    ]);
+    if (candidateUrls.length === 0) {
+      pushToast("Choose a relay host server first.", "info");
       return;
     }
 
     setRelayBusyAction("refresh");
+    setRelayInstallState("checking");
+    setRelayInstallMessage("Refreshing the linked device state from the relay.");
     try {
-      const session = await inspectRelayWorkspace(relayUrl, {
-        workspaceId: relayState.workspaceId,
-        deviceId: relayState.currentDeviceId,
-        adminToken: relayState.adminToken
-      });
-      applyRelaySession(session, relayUrl);
+      await connectRelayWithCandidates(candidateUrls);
+      setRelayInstallState("ready");
+      setRelayInstallMessage("Relay device state refreshed.");
       pushToast("Refreshed relay workspace state.", "success");
     } catch (error) {
-      updateRelayState((current) => ({
-        ...current,
-        lastError: getErrorMessage(error)
-      }));
-      pushToast(getErrorMessage(error), "error");
+      handleRelayError(error);
     } finally {
       setRelayBusyAction(null);
     }
@@ -1459,11 +1714,7 @@ export function App() {
       applyRelaySession(session, relayUrls.primary);
       pushToast("Revoked linked device.", "success");
     } catch (error) {
-      updateRelayState((current) => ({
-        ...current,
-        lastError: getErrorMessage(error)
-      }));
-      pushToast(getErrorMessage(error), "error");
+      handleRelayError(error);
     } finally {
       setRelayBusyAction(null);
     }
@@ -2225,6 +2476,9 @@ export function App() {
     const nextTabs = tabs.filter((tab) => tab.id !== tabId);
     clearTerminalInput(tabId);
     pendingTerminalStatesRef.current.delete(tabId);
+    if (relayInstallSessionId === tabId) {
+      setRelayInstallSessionId(null);
+    }
 
     try {
       await closeSession(tabId);
@@ -2253,6 +2507,11 @@ export function App() {
   };
 
   const handleStatus = (event: TerminalStatusEvent) => {
+    if (event.sessionId === relayInstallSessionId) {
+      setRelayInstallMessage(event.message);
+      setRelayInstallState(event.status === "error" ? "error" : "installing");
+    }
+
     const hasTab = tabsRef.current.some((tab) => tab.id === event.sessionId);
     if (hasTab) {
       setTabs((current) =>
@@ -2272,6 +2531,13 @@ export function App() {
   };
 
   const handleExit = (event: TerminalExitEvent) => {
+    if (event.sessionId === relayInstallSessionId) {
+      setRelayInstallMessage(
+        event.reason + (event.exitCode !== null ? ` (exit ${event.exitCode})` : "")
+      );
+      setRelayInstallState(event.exitCode === 0 ? "checking" : "error");
+    }
+
     const hasTab = tabsRef.current.some((tab) => tab.id === event.sessionId);
     if (hasTab) {
       setTabs((current) =>
@@ -2306,10 +2572,10 @@ export function App() {
         : "Dashboard";
 
   const headerSubtitle =
-    view === "sessions" && activeTabServer
-      ? `${tabs.length} live terminal${tabs.length === 1 ? "" : "s"} / ${buildSshTarget(activeTabServer)} / port ${activeTabServer.port}`
+    view === "sessions" && activeSessionTabServer
+      ? `${sessionTabs.length} live terminal${sessionTabs.length === 1 ? "" : "s"} / ${buildSshTarget(activeSessionTabServer)} / port ${activeSessionTabServer.port}`
       : view === "sessions"
-        ? `${tabs.length} active terminal${tabs.length === 1 ? "" : "s"}`
+        ? `${sessionTabs.length} active terminal${sessionTabs.length === 1 ? "" : "s"}`
       : view === "workspace" && workspaceMode === "terminal" && selectedServer
       ? `${buildSshTarget(selectedServer)} / port ${selectedServer.port}${selectedServer.useTmux ? ` / tmux ${selectedServer.tmuxSession}` : ""}`
       : view === "workspace"
@@ -2374,7 +2640,7 @@ export function App() {
         ["--danger" as string]: activeTheme.app.danger
       }}
     >
-      <AppRail onNavigate={setView} view={view} />
+      <AppRail onNavigate={handleNavigate} view={view} />
 
       <section className="main-panel main-panel--full">
         <AppHeader
@@ -2580,7 +2846,7 @@ export function App() {
         ) : null}
 
         <AppStage
-          activeTabId={activeTabId}
+          activeTabId={view === "sessions" ? activeSessionTab?.id ?? null : activeTabId}
           activeTheme={activeTheme}
           devicePlatform={devicePlatform}
           favoriteServers={favoriteServers}
@@ -2658,7 +2924,7 @@ export function App() {
           onImportSyncBundle={(file) => void handleImportSyncBundle(file)}
           onDisconnectGitHub={() => void handleDisconnectGitHub()}
           onSignInGitHubWithToken={(token) => void handleSignInGitHubWithToken(token)}
-          onNewTab={view === "sessions" ? () => setSessionLauncherOpen(true) : tabs.length > 0 ? () => void handleOpenSiblingTab() : undefined}
+          onNewTab={view === "sessions" ? () => setSessionLauncherOpen(true) : undefined}
           onOpenGitRepositoryShell={(repositoryId) => void handleOpenGitRepositoryShell(repositoryId)}
           localSessionPresets={localSessionPresets}
           onLaunchLocalPreset={(presetId) => void handleLaunchLocalPreset(presetId)}
@@ -2673,6 +2939,7 @@ export function App() {
           onRefreshGitRepositories={() => void refreshGitRepositories()}
           onRemoveGitRepository={handleRemoveGitRepository}
           onRemoveLocalPreset={handleRemoveLocalPreset}
+          onRevokeRelayDevice={(deviceId) => void handleRevokeRelayDevice(deviceId)}
           onRunTerminalCommand={handleRunTerminalCommand}
           onSyncIncludesCommandsChange={(value) =>
             updateSettings((current) => ({
@@ -2734,7 +3001,7 @@ export function App() {
           settings={settings}
           stageClassName={`stage stage--solo ${view === "dashboard" ? "stage--dashboard" : ""}`}
           syncBusyAction={syncBusyAction}
-          tabs={tabs}
+          tabs={sessionTabs}
           terminalCommands={terminalCommands}
           terminalProfiles={terminalProfiles}
           tmuxLoading={tmuxLoading}
@@ -2831,73 +3098,24 @@ export function App() {
 
       {relaySetupOpen ? (
         <RelaySetupDialog
-          onBootstrapRelayWorkspace={() => void handleBootstrapRelayWorkspace()}
           onCheckRelayHealth={() => void handleCheckRelayHealth()}
           onClose={() => setRelaySetupOpen(false)}
-          onJoinRelayWorkspace={() => void handleJoinRelayWorkspace()}
-          onOpenRelayCheckSession={() =>
-            void handleOpenRelayServerSession(
-              buildRelayCheckCommand(relayState.installRuntime),
-              "Opened a relay prerequisite check on the selected host."
-            )
-          }
-          onOpenRelayInstallSession={() =>
-            void handleOpenRelayServerSession(
-              buildRelayInstallCommand({
-                runtime: relayState.installRuntime,
-                relayPort: relayState.relayPort
-              }),
-              "Opened a relay install session on the selected host."
-            )
-          }
+          onInspectRelayHost={() => void handleInspectRelayHost()}
+          onOpenRelayInstallSession={() => void handleInstallRelayOnHost()}
           onRefreshRelayWorkspace={() => void handleRefreshRelayWorkspace()}
-          onRelayAdminTokenChange={(value) =>
-            updateRelayState((current) => ({
-              ...current,
-              adminToken: value
-            }))
-          }
-          onRelayDeviceNameChange={(value) =>
-            updateRelayState((current) => ({
-              ...current,
-              deviceName: value
-            }))
-          }
-          onRelayHostServerChange={(serverId) =>
-            updateRelayState((current) => ({
-              ...current,
-              hostServerId: serverId || null
-            }))
-          }
           onRelayInstallRuntimeChange={(value) =>
             updateRelayState((current) => ({
               ...current,
               installRuntime: value
             }))
           }
-          onRelayUrlChange={(value) =>
-            updateRelayState((current) => ({
-              ...current,
-              advancedRelayUrl: value
-            }))
-          }
-          onRelayWorkspaceIdChange={(value) =>
-            updateRelayState((current) => ({
-              ...current,
-              workspaceId: value
-            }))
-          }
-          onRelayWorkspaceNameChange={(value) =>
-            updateRelayState((current) => ({
-              ...current,
-              workspaceName: value
-            }))
-          }
-          onRevokeRelayDevice={(deviceId) => void handleRevokeRelayDevice(deviceId)}
           platform={devicePlatform}
           relayBusyAction={relayBusyAction}
+          relayHostServer={relayHostServer}
+          relayInstallMessage={relayInstallMessage}
+          relayInstallState={relayInstallState}
+          relayInstallTab={relayInstallTab}
           relayState={relayState}
-          servers={servers}
         />
       ) : null}
 
@@ -3119,6 +3337,10 @@ function buildGitReviewDraft(repository: GitRepositoryRecord) {
 function normalizeTerminalCommandInput(command: string) {
   const withoutTrailingBreaks = command.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n+$/u, "");
   return `${withoutTrailingBreaks.replace(/\n/g, "\r")}\r`;
+}
+
+function getTerminalSurface(tab: TerminalTab) {
+  return tab.surface === "relay" ? "relay" : "sessions";
 }
 
 function mergeTerminalStatus(

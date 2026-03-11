@@ -34,6 +34,12 @@ export type RelayBootstrapRequest = {
   devicePlatform: RelayDevicePlatform;
 };
 
+export type RelayConnectRequest = {
+  deviceId: string;
+  deviceName: string;
+  devicePlatform: RelayDevicePlatform;
+};
+
 export type RelayJoinRequest = {
   workspaceId: string;
   adminToken: string;

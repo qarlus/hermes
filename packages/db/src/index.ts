@@ -17,6 +17,7 @@ import type {
   KeychainItemRecord,
   ProjectInput,
   ProjectRecord,
+  RelayHostInspection,
   SessionStatusSnapshot,
   ServerInput,
   ServerRecord,
@@ -67,6 +68,9 @@ export const deleteKeychainItem = (id: string) =>
 
 export const listTmuxSessions = (serverId: string) =>
   invoke<TmuxSessionRecord[]>("list_tmux_sessions", { serverId });
+
+export const inspectRelayHost = (serverId: string) =>
+  invoke<RelayHostInspection>("inspect_relay_host", { serverId });
 
 export const connectSession = (input: ConnectSessionInput) =>
   invoke<TerminalTab>("connect_session", { input });

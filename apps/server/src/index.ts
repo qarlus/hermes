@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type {
   RelayBootstrapRequest,
+  RelayConnectRequest,
   RelayHealthResponse,
   RelayInspectRequest,
   RelayJoinRequest,
@@ -72,6 +73,11 @@ async function handleRequest(
   response: ServerResponse<IncomingMessage>,
   store: HermesRelayStore
 ) {
+  if (request.method === "OPTIONS") {
+    sendEmpty(response, 204);
+    return;
+  }
+
   const url = new URL(request.url ?? "/", buildRelayUrl(request));
 
   if (request.method === "GET" && url.pathname === "/health") {
@@ -83,6 +89,13 @@ async function handleRequest(
   if (request.method === "POST" && url.pathname === "/api/relay/bootstrap") {
     const payload = await readJson<RelayBootstrapRequest>(request);
     const session = await store.bootstrapWorkspace(payload, buildRelayUrl(request));
+    sendJson(response, 200, session);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/relay/connect") {
+    const payload = await readJson<RelayConnectRequest>(request);
+    const session = await store.connectWorkspace(payload, buildRelayUrl(request));
     sendJson(response, 200, session);
     return;
   }
@@ -171,6 +184,73 @@ class HermesRelayStore {
     await this.save(store);
 
     return this.buildSession(store.relayId, workspace, masterDeviceId, relayUrl, workspace.adminToken);
+  }
+
+  async connectWorkspace(input: RelayConnectRequest, relayUrl: string): Promise<RelayWorkspaceSession> {
+    const deviceName = input.deviceName.trim();
+    if (!deviceName) {
+      throw new Error("Device name is required.");
+    }
+
+    const store = await this.load();
+    const timestamp = new Date().toISOString();
+    let workspace = store.workspaces[0];
+
+    if (!workspace) {
+      workspace = {
+        id: randomId(),
+        name: "Hermes",
+        createdAt: timestamp,
+        adminToken: randomSecret(),
+        masterDeviceId: input.deviceId,
+        devices: []
+      };
+      store.workspaces.push(workspace);
+    }
+
+    const existingDevice = workspace.devices.find((candidate) => candidate.id === input.deviceId);
+    if (existingDevice?.revokedAt) {
+      throw new Error("This device has been revoked from the relay.");
+    }
+
+    const currentDevice =
+      existingDevice ??
+      ({
+        id: input.deviceId,
+        name: deviceName,
+        platform: input.devicePlatform,
+        role: workspace.masterDeviceId === input.deviceId ? "master" : "member",
+        linkedAt: timestamp,
+        lastSeenAt: timestamp,
+        revokedAt: null
+      } satisfies RelayWorkspaceDeviceRecord);
+
+    if (!existingDevice) {
+      if (workspace.devices.length === 0) {
+        currentDevice.role = "master";
+        workspace.masterDeviceId = input.deviceId;
+      }
+      workspace.devices.push(currentDevice);
+    } else {
+      existingDevice.name = deviceName;
+      existingDevice.platform = input.devicePlatform;
+      existingDevice.lastSeenAt = timestamp;
+      existingDevice.role = workspace.masterDeviceId === input.deviceId ? "master" : "member";
+    }
+
+    const deviceForSession =
+      workspace.devices.find((candidate) => candidate.id === input.deviceId) ?? currentDevice;
+    deviceForSession.lastSeenAt = timestamp;
+
+    await this.save(store);
+
+    return this.buildSession(
+      store.relayId,
+      workspace,
+      deviceForSession.id,
+      relayUrl,
+      deviceForSession.role === "master" ? workspace.adminToken : null
+    );
   }
 
   async joinWorkspace(input: RelayJoinRequest, relayUrl: string): Promise<RelayWorkspaceSession> {
@@ -348,15 +428,29 @@ function sendJson(
   body: unknown
 ) {
   response.writeHead(status, {
+    ...corsHeaders(),
     "content-type": "application/json; charset=utf-8"
   });
   response.end(JSON.stringify(body));
+}
+
+function sendEmpty(response: ServerResponse<IncomingMessage>, status: number) {
+  response.writeHead(status, corsHeaders());
+  response.end();
 }
 
 function buildRelayUrl(request: IncomingMessage) {
   const protocol = request.headers["x-forwarded-proto"] ?? "http";
   const host = request.headers.host ?? `${DEFAULT_HOST}:${DEFAULT_PORT}`;
   return `${protocol}://${host}`;
+}
+
+function corsHeaders() {
+  return {
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "GET,POST,OPTIONS",
+    "access-control-allow-headers": "content-type"
+  };
 }
 
 function randomId() {

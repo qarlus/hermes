@@ -41,6 +41,8 @@ interface TerminalWorkspaceProps {
   };
   emptyState?: ReactNode;
   rightRail?: ReactNode;
+  rightRailVariant?: "commands" | "relay";
+  rightRailOpen?: boolean;
   emptyTabsLabel?: string | null;
   onSelectTab: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
@@ -64,6 +66,8 @@ export function TerminalWorkspace({
   terminalTheme,
   emptyState,
   rightRail,
+  rightRailVariant = "commands",
+  rightRailOpen = false,
   emptyTabsLabel = "No active terminals",
   onSelectTab,
   onCloseTab,
@@ -196,7 +200,11 @@ export function TerminalWorkspace({
         </div>
       ) : null}
 
-      <div className={`workspace__body ${rightRail ? "workspace__body--with-rail" : ""}`}>
+      <div
+        className={`workspace__body ${rightRail ? "workspace__body--with-rail" : ""} ${
+          rightRailVariant === "relay" ? "workspace__body--with-rail-relay" : ""
+        } ${rightRailOpen ? "workspace__body--with-rail-open" : ""}`}
+      >
         <div className="workspace__main">
           {!visible || tabs.length === 0 ? (
             emptyState ?? (
@@ -249,7 +257,11 @@ export function TerminalWorkspace({
         </div>
 
         {rightRail ? (
-          <div className="workspace-sidecar">
+          <div
+            className={`workspace-sidecar ${
+              rightRailVariant === "relay" ? "workspace-sidecar--relay" : ""
+            } ${rightRailOpen ? "workspace-sidecar--open" : ""}`}
+          >
             <div className="workspace-sidecar__hitbox" />
             <aside className="workspace-sidecar__panel">{rightRail}</aside>
           </div>

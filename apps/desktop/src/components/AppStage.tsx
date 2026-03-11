@@ -75,7 +75,7 @@ type AppStageProps = {
   terminalProfiles: TerminalLaunchProfile[];
   localLauncherSummary: string;
   syncBusyAction: "export" | "import" | null;
-  relayBusyAction: "bootstrap" | "join" | "refresh" | "revoke" | "health" | null;
+  relayBusyAction: "refresh" | "revoke" | "health" | "inspect" | null;
   onCreateProject: () => void;
   onOpenProject: (projectId: string) => void;
   onCopyPublicKey: (id: string) => void;
@@ -149,6 +149,7 @@ type AppStageProps = {
   onImportSyncBundle: (file: File) => void;
   onOpenRelaySetup: () => void;
   onRefreshRelayWorkspace: () => void;
+  onRevokeRelayDevice: (deviceId: string) => void;
 };
 
 export function AppStage({
@@ -263,7 +264,8 @@ export function AppStage({
   onExportSyncBundle,
   onImportSyncBundle,
   onOpenRelaySetup,
-  onRefreshRelayWorkspace
+  onRefreshRelayWorkspace,
+  onRevokeRelayDevice
 }: AppStageProps) {
   const sessionsEmptyState = (
     <div className="workspace__empty workspace__content">
@@ -411,6 +413,7 @@ export function AppStage({
               onImportBundle={onImportSyncBundle}
               onOpenRelaySetup={onOpenRelaySetup}
               onRefreshRelayWorkspace={onRefreshRelayWorkspace}
+              onRevokeRelayDevice={onRevokeRelayDevice}
               onSyncIncludesCommandsChange={onSyncIncludesCommandsChange}
               onSyncIncludesPinnedRepositoriesChange={onSyncIncludesPinnedRepositoriesChange}
               onTerminalFontSizeChange={onTerminalFontSizeChange}

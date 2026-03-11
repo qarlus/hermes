@@ -1,5 +1,6 @@
 import type {
   RelayBootstrapRequest,
+  RelayConnectRequest,
   RelayHealthResponse,
   RelayInspectRequest,
   RelayJoinRequest,
@@ -18,6 +19,13 @@ export async function bootstrapRelayWorkspace(
   input: RelayBootstrapRequest
 ) {
   return request<RelayWorkspaceSession>(relayUrl, "/api/relay/bootstrap", {
+    body: JSON.stringify(input),
+    method: "POST"
+  });
+}
+
+export async function connectRelayWorkspace(relayUrl: string, input: RelayConnectRequest) {
+  return request<RelayWorkspaceSession>(relayUrl, "/api/relay/connect", {
     body: JSON.stringify(input),
     method: "POST"
   });
@@ -55,13 +63,22 @@ async function request<T>(
   path: string,
   init: RequestInit
 ): Promise<T> {
-  const response = await fetch(`${normalizeRelayUrl(relayUrl)}${path}`, {
-    ...init,
-    headers: {
-      "content-type": "application/json",
-      ...(init.headers ?? {})
-    }
-  });
+  const normalizedRelayUrl = normalizeRelayUrl(relayUrl);
+  let response: Response;
+
+  try {
+    response = await fetch(`${normalizedRelayUrl}${path}`, {
+      ...init,
+      headers: {
+        "content-type": "application/json",
+        ...(init.headers ?? {})
+      }
+    });
+  } catch (error) {
+    throw new Error(
+      `Unable to reach relay at ${normalizedRelayUrl}. Make sure it is running, updated, and reachable over Tailscale from this device.`
+    );
+  }
 
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as { error?: string } | null;

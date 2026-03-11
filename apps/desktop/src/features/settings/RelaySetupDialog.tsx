@@ -1,55 +1,89 @@
-import { Copy, Link2, RefreshCw, ServerCog, Shield, TerminalSquare, X } from "lucide-react";
-import { buildSshTarget, serverDisplayLabel, type ServerRecord } from "@hermes/core";
+import {
+  CheckCircle2,
+  CircleDashed,
+  Link2,
+  RefreshCw,
+  TerminalSquare,
+  WandSparkles,
+  X
+} from "lucide-react";
+import { buildSshTarget, serverDisplayLabel, type ServerRecord, type TerminalTab } from "@hermes/core";
 import type { DevicePlatform, RelayClientState } from "../../lib/settings";
 import { getDevicePlatformLabel } from "../../lib/settings";
 
 type RelaySetupDialogProps = {
   platform: DevicePlatform;
   relayState: RelayClientState;
-  servers: ServerRecord[];
-  relayBusyAction: "bootstrap" | "join" | "refresh" | "revoke" | "health" | null;
+  relayHostServer: ServerRecord | null;
+  relayBusyAction: "refresh" | "revoke" | "health" | "inspect" | null;
+  relayInstallState: "idle" | "installing" | "checking" | "ready" | "error";
+  relayInstallMessage: string | null;
+  relayInstallTab: TerminalTab | null;
   onClose: () => void;
-  onRelayHostServerChange: (serverId: string) => void;
   onRelayInstallRuntimeChange: (value: "docker" | "appleContainer") => void;
-  onRelayWorkspaceNameChange: (value: string) => void;
-  onRelayWorkspaceIdChange: (value: string) => void;
-  onRelayAdminTokenChange: (value: string) => void;
-  onRelayDeviceNameChange: (value: string) => void;
-  onRelayUrlChange: (value: string) => void;
+  onInspectRelayHost: () => void;
   onCheckRelayHealth: () => void;
-  onOpenRelayCheckSession: () => void;
   onOpenRelayInstallSession: () => void;
-  onBootstrapRelayWorkspace: () => void;
-  onJoinRelayWorkspace: () => void;
   onRefreshRelayWorkspace: () => void;
-  onRevokeRelayDevice: (deviceId: string) => void;
 };
 
 export function RelaySetupDialog({
   platform,
   relayState,
-  servers,
+  relayHostServer,
   relayBusyAction,
+  relayInstallState,
+  relayInstallMessage,
+  relayInstallTab,
   onClose,
-  onRelayHostServerChange,
   onRelayInstallRuntimeChange,
-  onRelayWorkspaceNameChange,
-  onRelayWorkspaceIdChange,
-  onRelayAdminTokenChange,
-  onRelayDeviceNameChange,
-  onRelayUrlChange,
+  onInspectRelayHost,
   onCheckRelayHealth,
-  onOpenRelayCheckSession,
   onOpenRelayInstallSession,
-  onBootstrapRelayWorkspace,
-  onJoinRelayWorkspace,
-  onRefreshRelayWorkspace,
-  onRevokeRelayDevice
+  onRefreshRelayWorkspace
 }: RelaySetupDialogProps) {
-  const selectedRelayServer =
-    servers.find((server) => server.id === relayState.hostServerId) ?? null;
-  const isRelayLinked = Boolean(relayState.workspaceId && relayState.currentDeviceId);
-  const isRelayMaster = relayState.currentDeviceRole === "master";
+  const isRelayLinked = Boolean(relayState.currentDeviceId);
+  const stepItems = [
+    {
+      label: "Server selected",
+      complete: Boolean(relayHostServer),
+      detail: relayHostServer
+        ? `${serverDisplayLabel(relayHostServer)} / ${buildSshTarget(relayHostServer)}`
+        : "Open Relay from a saved server to bind setup to that host."
+    },
+    {
+      label: "Tailscale endpoint discovered",
+      complete: Boolean(relayState.detectedRelayUrl),
+      detail:
+        relayState.detectedRelayUrl ??
+        "Hermes will inspect the host, confirm Tailscale, and pick the relay address automatically."
+    },
+    {
+      label: "Relay package running",
+      complete: relayState.relayHealthy,
+      detail: relayState.relayHealthy
+        ? `Healthy${relayState.relayVersion ? ` / v${relayState.relayVersion}` : ""}`
+        : relayState.relayInstalled
+          ? relayState.relayRunning
+            ? "Container is running. Finish with a relay health check."
+            : "Package exists on the host but is not running yet."
+          : "Install Hermes Relay on the selected host."
+    },
+    {
+      label: "This device linked",
+      complete: isRelayLinked,
+      detail: isRelayLinked
+        ? `${relayState.currentDeviceRole === "master" ? "Master" : "Member"} device connected automatically`
+        : "Hermes links this device automatically once the relay is reachable."
+    }
+  ];
+
+  const activityTone =
+    relayInstallState === "ready"
+      ? "relay-setup-dialog__activity--ready"
+      : relayInstallState === "error"
+        ? "relay-setup-dialog__activity--error"
+        : "relay-setup-dialog__activity--running";
 
   return (
     <div className="modal-backdrop" onClick={onClose} role="presentation">
@@ -61,200 +95,146 @@ export function RelaySetupDialog({
         <div className="modal-card__header">
           <div>
             <p className="eyebrow">Sync</p>
-            <h2>Relay setup</h2>
+            <h2>Relay on {relayHostServer ? serverDisplayLabel(relayHostServer) : "saved server"}</h2>
+            <span>
+              Hermes installs and checks the relay in the background, then links this device automatically.
+            </span>
           </div>
-          <button
-            aria-label="Close relay setup"
-            className="ghost-button ghost-button--icon"
-            onClick={onClose}
-            type="button"
-          >
-            <X size={14} />
-          </button>
+          <div className="tool-updates__header-actions">
+            <span className="settings-pill">{getDevicePlatformLabel(platform)}</span>
+            <button
+              aria-label="Close relay setup"
+              className="ghost-button ghost-button--icon"
+              onClick={onClose}
+              type="button"
+            >
+              <X size={14} />
+            </button>
+          </div>
         </div>
 
-        <div className="modal-card__body relay-setup">
+        <div className="modal-card__body relay-setup-dialog">
           <section className="relay-setup__section">
             <div className="relay-setup__header">
               <div>
                 <p className="eyebrow">Host</p>
-                <h3>Choose relay host</h3>
-                <span>Pick a saved server, then run the generated check or install command in a real SSH session.</span>
+                <h3>Automatic setup</h3>
+                <span>Use the selected server as the single Hermes relay host. Nothing is stored on Hermes infrastructure.</span>
               </div>
-              <span className="settings-pill">{getDevicePlatformLabel(platform)}</span>
-            </div>
-
-            <div className="settings-form-grid">
-              <label className="field">
-                <span>Relay host server</span>
-                <select
-                  onChange={(event) => onRelayHostServerChange(event.target.value)}
-                  value={relayState.hostServerId ?? ""}
-                >
-                  <option value="">Choose a saved server</option>
-                  {servers.map((server) => (
-                    <option key={server.id} value={server.id}>
-                      {serverDisplayLabel(server)} - {buildSshTarget(server)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="field">
-                <span>Install runtime</span>
-                <select
-                  onChange={(event) =>
-                    onRelayInstallRuntimeChange(event.target.value as "docker" | "appleContainer")
-                  }
-                  value={relayState.installRuntime}
-                >
-                  <option value="docker">Docker / Linux container host</option>
-                  <option value="appleContainer">Apple Container / macOS relay host</option>
-                </select>
-              </label>
             </div>
 
             <div className="settings-relay-meta">
               <span className="settings-pill">
-                Host:{" "}
-                {selectedRelayServer
-                  ? `${serverDisplayLabel(selectedRelayServer)} / ${buildSshTarget(selectedRelayServer)}`
-                  : "Not selected"}
+                Host: {relayHostServer ? `${serverDisplayLabel(relayHostServer)} / ${buildSshTarget(relayHostServer)}` : "Not selected"}
               </span>
               <span className="settings-pill">
                 Runtime: {relayState.installRuntime === "docker" ? "Docker" : "Apple Container"}
               </span>
+              {relayState.detectedRelayUrl ? (
+                <span className="settings-pill">Relay URL: {relayState.detectedRelayUrl}</span>
+              ) : null}
             </div>
 
+            <label className="field">
+              <span>Install runtime</span>
+              <select
+                onChange={(event) =>
+                  onRelayInstallRuntimeChange(event.target.value as "docker" | "appleContainer")
+                }
+                value={relayState.installRuntime}
+              >
+                <option value="docker">Docker / Linux container host</option>
+                <option value="appleContainer">Apple Container / macOS relay host</option>
+              </select>
+            </label>
+
             <div className="settings-card__actions">
-              <button className="ghost-button" disabled={!selectedRelayServer} onClick={onOpenRelayCheckSession} type="button">
-                <TerminalSquare size={14} />
-                Check prerequisites
+              <button
+                className="ghost-button"
+                disabled={!relayHostServer || relayBusyAction !== null}
+                onClick={onInspectRelayHost}
+                type="button"
+              >
+                <WandSparkles size={14} />
+                {relayBusyAction === "inspect" ? "Inspecting..." : "Check host"}
               </button>
-              <button className="ghost-button" disabled={!selectedRelayServer} onClick={onOpenRelayInstallSession} type="button">
+              <button
+                className="primary-button"
+                disabled={!relayHostServer}
+                onClick={onOpenRelayInstallSession}
+                type="button"
+              >
                 <TerminalSquare size={14} />
-                Install on host
+                Install automatically
               </button>
               <button
                 className="ghost-button"
-                disabled={!selectedRelayServer || relayBusyAction !== null}
+                disabled={!relayHostServer || relayBusyAction !== null}
                 onClick={onCheckRelayHealth}
                 type="button"
               >
                 <Link2 size={14} />
                 {relayBusyAction === "health" ? "Checking..." : "Check relay"}
               </button>
+              <button
+                className="ghost-button"
+                disabled={!isRelayLinked || relayBusyAction !== null}
+                onClick={onRefreshRelayWorkspace}
+                type="button"
+              >
+                <RefreshCw size={14} />
+                {relayBusyAction === "refresh" ? "Refreshing..." : "Refresh"}
+              </button>
             </div>
 
-            <div className="settings-open-source-note">
-              <strong>Open-source relay package</strong>
-              <span>The generated install session pulls from the public Hermes repository so the relay source can be inspected before it is built and run.</span>
+            <div className={`relay-setup-dialog__activity ${activityTone}`}>
+              <strong>
+                {relayInstallState === "ready"
+                  ? "Relay connected"
+                  : relayInstallState === "error"
+                    ? "Relay needs attention"
+                    : relayInstallState === "checking"
+                      ? "Checking relay"
+                      : relayInstallState === "installing"
+                        ? "Install session running"
+                        : "Ready to install"}
+              </strong>
+              <span>
+                {relayInstallMessage ??
+                  "Hermes can inspect the host, open the install session in Sessions, and keep checking until the relay is reachable."}
+              </span>
+              {relayInstallTab ? (
+                <small>
+                  Install session: {relayInstallTab.title} / {relayInstallTab.status}
+                </small>
+              ) : null}
             </div>
           </section>
 
           <section className="relay-setup__section">
             <div className="relay-setup__header">
               <div>
-                <p className="eyebrow">Link</p>
-                <h3>Link this device</h3>
-                <span>The first linked device becomes the master device and keeps admin control over the relay workspace.</span>
+                <p className="eyebrow">Progress</p>
+                <h3>Live setup state</h3>
+                <span>Hermes keeps checking the selected host and relay endpoint while setup is active.</span>
               </div>
             </div>
 
-            <div className="settings-form-grid">
-              <label className="field">
-                <span>Device name</span>
-                <input onChange={(event) => onRelayDeviceNameChange(event.target.value)} placeholder="Hermes Mac" value={relayState.deviceName} />
-              </label>
-
-              <label className="field">
-                <span>Workspace name</span>
-                <input onChange={(event) => onRelayWorkspaceNameChange(event.target.value)} placeholder="Personal relay" value={relayState.workspaceName} />
-              </label>
-
-              <label className="field">
-                <span>Workspace ID</span>
-                <input onChange={(event) => onRelayWorkspaceIdChange(event.target.value)} placeholder="Paste workspace ID to join" value={relayState.workspaceId ?? ""} />
-              </label>
-
-              <label className="field">
-                <span>{isRelayMaster ? "Admin token" : "Admin token / join token"}</span>
-                <input onChange={(event) => onRelayAdminTokenChange(event.target.value)} placeholder="Only the master device keeps this after bootstrap" value={relayState.adminToken ?? ""} />
-              </label>
-            </div>
-
-            <div className="settings-card__actions">
-              <button className="primary-button" disabled={relayBusyAction !== null} onClick={onBootstrapRelayWorkspace} type="button">
-                <Shield size={14} />
-                {relayBusyAction === "bootstrap" ? "Creating..." : "Create master"}
-              </button>
-              <button className="ghost-button" disabled={relayBusyAction !== null} onClick={onJoinRelayWorkspace} type="button">
-                <ServerCog size={14} />
-                {relayBusyAction === "join" ? "Joining..." : "Join workspace"}
-              </button>
-              <button className="ghost-button" disabled={!isRelayLinked || relayBusyAction !== null} onClick={onRefreshRelayWorkspace} type="button">
-                <RefreshCw size={14} />
-                {relayBusyAction === "refresh" ? "Refreshing..." : "Refresh"}
-              </button>
-            </div>
-
-            {relayState.lastError ? <div className="settings-inline-error">{relayState.lastError}</div> : null}
-
-            <details className="settings-advanced">
-              <summary>Advanced relay override</summary>
-              <label className="field">
-                <span>Manual relay URL override</span>
-                <input onChange={(event) => onRelayUrlChange(event.target.value)} placeholder="Optional override if hostname/port differ" value={relayState.advancedRelayUrl} />
-              </label>
-            </details>
-          </section>
-
-          {relayState.devices.length > 0 ? (
-            <section className="relay-setup__section">
-              <div className="relay-setup__header">
-                <div>
-                  <p className="eyebrow">Devices</p>
-                  <h3>Linked devices</h3>
+            <div className="relay-setup-dialog__steps">
+              {stepItems.map((step) => (
+                <div className="relay-setup-dialog__step" key={step.label}>
+                  <span className={`relay-setup-dialog__step-icon ${step.complete ? "relay-setup-dialog__step-icon--complete" : ""}`}>
+                    {step.complete ? <CheckCircle2 size={14} /> : <CircleDashed size={14} />}
+                  </span>
+                  <div className="relay-setup-dialog__step-copy">
+                    <strong>{step.label}</strong>
+                    <span>{step.detail}</span>
+                  </div>
                 </div>
-                {isRelayMaster && relayState.adminToken ? (
-                  <button
-                    className="ghost-button"
-                    onClick={() => void navigator.clipboard.writeText(relayState.adminToken ?? "")}
-                    type="button"
-                  >
-                    <Copy size={14} />
-                    Copy token
-                  </button>
-                ) : null}
-              </div>
+              ))}
+            </div>
 
-              <div className="settings-device-list">
-                {relayState.devices.map((device) => {
-                  const isCurrent = device.id === relayState.currentDeviceId;
-
-                  return (
-                    <div className="settings-device-row" key={device.id}>
-                      <div className="settings-device-row__body">
-                        <strong>
-                          {device.name}
-                          {isCurrent ? " (this device)" : ""}
-                        </strong>
-                        <span>
-                          {getDevicePlatformLabel(device.platform)} / {device.role}
-                          {device.revokedAt ? " / revoked" : ""}
-                        </span>
-                      </div>
-                      {isRelayMaster && !isCurrent && !device.revokedAt ? (
-                        <button className="ghost-button" disabled={relayBusyAction !== null} onClick={() => onRevokeRelayDevice(device.id)} type="button">
-                          {relayBusyAction === "revoke" ? "Revoking..." : "Revoke"}
-                        </button>
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-          ) : null}
+          </section>
         </div>
       </section>
     </div>
