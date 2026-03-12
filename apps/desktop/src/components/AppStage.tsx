@@ -12,7 +12,7 @@ import type {
   TerminalTab,
   TmuxSessionRecord
 } from "@hermes/core";
-import { ArrowUpCircle, Laptop, Server } from "lucide-react";
+import { ArrowUpCircle, FolderPlus, Laptop, Server } from "lucide-react";
 import { HostDashboard } from "../features/dashboard/HostDashboard";
 import { FileBrowserPage } from "../features/files/FileBrowserPage";
 import { GitPage, type GitRepositoryView, type GitToolbarContext } from "../features/git/GitPage";
@@ -26,7 +26,6 @@ import type {
   DevicePlatform,
   HermesSettings,
   HermesThemeDefinition,
-  RelayClientState,
   TerminalLaunchProfile,
   TerminalLaunchProfileId,
   HermesThemeId
@@ -69,13 +68,14 @@ type AppStageProps = {
   gitHubRepositoryLoading: boolean;
   gitHubSearchLoading: boolean;
   settings: HermesSettings;
-  relayState: RelayClientState;
   devicePlatform: DevicePlatform;
   activeTheme: HermesThemeDefinition;
   terminalProfiles: TerminalLaunchProfile[];
   localLauncherSummary: string;
+  syncedKeyCount: number;
+  tmuxMetadataCount: number;
+  sessionHistoryCount: number;
   syncBusyAction: "export" | "import" | null;
-  relayBusyAction: "refresh" | "revoke" | "health" | "inspect" | null;
   onCreateProject: () => void;
   onOpenProject: (projectId: string) => void;
   onCopyPublicKey: (id: string) => void;
@@ -143,13 +143,14 @@ type AppStageProps = {
   onCustomTerminalProgramChange: (value: string) => void;
   onCustomTerminalArgsChange: (value: string) => void;
   onCustomTerminalLabelChange: (value: string) => void;
+  onSyncIncludesSettingsChange: (value: boolean) => void;
+  onSyncIncludesSecretsChange: (value: boolean) => void;
+  onSyncIncludesTmuxMetadataChange: (value: boolean) => void;
+  onSyncIncludesHistoryChange: (value: boolean) => void;
   onSyncIncludesCommandsChange: (value: boolean) => void;
   onSyncIncludesPinnedRepositoriesChange: (value: boolean) => void;
   onExportSyncBundle: () => void;
   onImportSyncBundle: (file: File) => void;
-  onOpenRelaySetup: () => void;
-  onRefreshRelayWorkspace: () => void;
-  onRevokeRelayDevice: (deviceId: string) => void;
 };
 
 export function AppStage({
@@ -189,13 +190,14 @@ export function AppStage({
   gitHubRepositoryLoading,
   gitHubSearchLoading,
   settings,
-  relayState,
   devicePlatform,
   activeTheme,
   terminalProfiles,
   localLauncherSummary,
+  syncedKeyCount,
+  tmuxMetadataCount,
+  sessionHistoryCount,
   syncBusyAction,
-  relayBusyAction,
   onCreateProject,
   onOpenProject,
   onCopyPublicKey,
@@ -259,13 +261,14 @@ export function AppStage({
   onCustomTerminalProgramChange,
   onCustomTerminalArgsChange,
   onCustomTerminalLabelChange,
+  onSyncIncludesSettingsChange,
+  onSyncIncludesSecretsChange,
+  onSyncIncludesTmuxMetadataChange,
+  onSyncIncludesHistoryChange,
   onSyncIncludesCommandsChange,
   onSyncIncludesPinnedRepositoriesChange,
   onExportSyncBundle,
-  onImportSyncBundle,
-  onOpenRelaySetup,
-  onRefreshRelayWorkspace,
-  onRevokeRelayDevice
+  onImportSyncBundle
 }: AppStageProps) {
   const sessionsEmptyState = (
     <div className="workspace__empty workspace__content">
@@ -281,11 +284,12 @@ export function AppStage({
           Saved server
         </button>
         <button className="ghost-button" onClick={onOpenPresetEditor} type="button">
-          Save path
+          <FolderPlus size={14} />
+          Save path shortcut
         </button>
         <button className="ghost-button" onClick={onOpenToolUpdates} type="button">
           <ArrowUpCircle size={14} />
-          Agent updates
+          Tool updates
         </button>
       </div>
       {localSessionPresets.length > 0 ? (
@@ -406,28 +410,29 @@ export function AppStage({
               commandCount={terminalCommands.length}
               launcherSummary={localLauncherSummary}
               localPresetCount={localSessionPresets.length}
+              sessionHistoryCount={sessionHistoryCount}
               onCustomTerminalArgsChange={onCustomTerminalArgsChange}
               onCustomTerminalLabelChange={onCustomTerminalLabelChange}
               onCustomTerminalProgramChange={onCustomTerminalProgramChange}
               onExportBundle={onExportSyncBundle}
               onImportBundle={onImportSyncBundle}
-              onOpenRelaySetup={onOpenRelaySetup}
-              onRefreshRelayWorkspace={onRefreshRelayWorkspace}
-              onRevokeRelayDevice={onRevokeRelayDevice}
+              onSyncIncludesHistoryChange={onSyncIncludesHistoryChange}
+              onSyncIncludesSecretsChange={onSyncIncludesSecretsChange}
+              onSyncIncludesSettingsChange={onSyncIncludesSettingsChange}
               onSyncIncludesCommandsChange={onSyncIncludesCommandsChange}
               onSyncIncludesPinnedRepositoriesChange={onSyncIncludesPinnedRepositoriesChange}
+              onSyncIncludesTmuxMetadataChange={onSyncIncludesTmuxMetadataChange}
               onTerminalFontSizeChange={onTerminalFontSizeChange}
               onTerminalProfileChange={onTerminalProfileChange}
               onThemeChange={onThemeChange}
               pinnedRepositoryCount={gitRepositories.length}
               platform={devicePlatform}
-              relayBusyAction={relayBusyAction}
-              relayState={relayState}
               serverCount={servers.length}
-              servers={servers}
               settings={settings}
+              syncedKeyCount={syncedKeyCount}
               syncBusyAction={syncBusyAction}
               terminalProfiles={terminalProfiles}
+              tmuxMetadataCount={tmuxMetadataCount}
               workspaceCount={projectCount}
             />
           ) : (

@@ -21,14 +21,14 @@ export function ToolUpdatesPanel({
   return (
     <div className="modal-backdrop" onClick={onClose} role="presentation">
       <section
-        aria-label="Agent updates"
+        aria-label="Tool updates"
         className="modal-card modal-card--session-launcher"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="modal-card__header">
           <div>
             <p className="eyebrow">Sessions</p>
-            <h2>Agent updates</h2>
+            <h2>Tool updates</h2>
           </div>
           <div className="tool-updates__header-actions">
             <button className="ghost-button" disabled={loading} onClick={onRefresh} type="button">
@@ -36,7 +36,7 @@ export function ToolUpdatesPanel({
               Refresh
             </button>
             <button
-              aria-label="Close agent updates"
+              aria-label="Close tool updates"
               className="ghost-button ghost-button--icon"
               onClick={onClose}
               type="button"
@@ -49,17 +49,17 @@ export function ToolUpdatesPanel({
         <div className="modal-card__body tool-updates">
           <section className="session-launcher__section">
             <div className="session-launcher__header">
-              <p className="eyebrow">Coding agents</p>
-              <span>Check installed coding-agent CLIs and run supported updates on this device.</span>
+              <p className="eyebrow">CLI tools</p>
+              <span>Check installed CLI tools and run supported updates on this device.</span>
             </div>
 
             {loading && tools.length === 0 ? (
               <div className="tool-updates__empty">
-                <span>Checking installed coding agents...</span>
+                <span>Checking installed CLI tools...</span>
               </div>
             ) : tools.length === 0 ? (
               <div className="tool-updates__empty">
-                <span>No supported coding-agent CLIs are installed on this device.</span>
+                <span>No supported CLI tools are installed on this device.</span>
               </div>
             ) : (
               <div className="tool-updates__list">

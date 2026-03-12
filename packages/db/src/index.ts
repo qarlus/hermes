@@ -25,6 +25,21 @@ import type {
   TmuxSessionRecord,
   TerminalTab
 } from "@hermes/core";
+import type {
+  RelayApproveDeviceRequest,
+  RelayConnectRequest,
+  RelayDeviceIdentityRecord,
+  RelayEncryptedEventEnvelope,
+  RelayEncryptedSnapshotEnvelope,
+  RelayWorkspaceKeyWrapRecord
+} from "@hermes/sync";
+
+export type SyncableKeychainItemRecord = {
+  name: string;
+  kind: "default" | "password" | "sshKey";
+  secret: string;
+  publicKey: string | null;
+};
 
 export const listProjects = () => invoke<ProjectRecord[]>("list_projects");
 
@@ -54,11 +69,20 @@ export const createKeychainItem = (input: { name: string; kind: KeychainItemKind
 export const getDefaultSshDirectory = () =>
   invoke<string | null>("get_default_ssh_directory");
 
+export const getLocalAccountName = () =>
+  invoke<string | null>("get_local_account_name");
+
 export const createLocalSshKey = (input: CreateLocalSshKeyInput) =>
   invoke<KeychainItemRecord>("create_local_ssh_key", { input });
 
 export const getKeychainPublicKey = (id: string) =>
   invoke<string>("get_keychain_public_key", { id });
+
+export const listSyncableKeychainItems = () =>
+  invoke<SyncableKeychainItemRecord[]>("list_syncable_keychain_items");
+
+export const upsertSyncableKeychainItems = (items: SyncableKeychainItemRecord[]) =>
+  invoke<KeychainItemRecord[]>("upsert_syncable_keychain_items", { items });
 
 export const updateKeychainItemName = (id: string, name: string) =>
   invoke<KeychainItemRecord>("update_keychain_item_name", { id, name });
@@ -71,6 +95,94 @@ export const listTmuxSessions = (serverId: string) =>
 
 export const inspectRelayHost = (serverId: string) =>
   invoke<RelayHostInspection>("inspect_relay_host", { serverId });
+
+export const getOrCreateRelayDeviceIdentity = (deviceId: string) =>
+  invoke<RelayDeviceIdentityRecord>("get_or_create_relay_device_identity", { deviceId });
+
+export const wrapRelayWorkspaceKeyForDevice = (
+  workspaceId: string,
+  wrappedByDeviceId: string,
+  recipientDeviceId: string,
+  recipientPublicKey: string
+) =>
+  invoke<RelayWorkspaceKeyWrapRecord>("wrap_relay_workspace_key_for_device", {
+    workspaceId,
+    wrappedByDeviceId,
+    recipientDeviceId,
+    recipientPublicKey
+  });
+
+export const unwrapRelayWorkspaceKey = (
+  workspaceId: string,
+  deviceId: string,
+  wrap: RelayWorkspaceKeyWrapRecord
+) =>
+  invoke<boolean>("unwrap_relay_workspace_key", {
+    workspaceId,
+    deviceId,
+    wrap
+  });
+
+export const rotateRelayWorkspaceKey = (workspaceId: string) =>
+  invoke<boolean>("rotate_relay_workspace_key", {
+    workspaceId
+  });
+
+export const createRelayEncryptedEvent = (
+  workspaceId: string,
+  deviceId: string,
+  eventId: string,
+  sequence: number,
+  payloadJson: string
+) =>
+  invoke<RelayEncryptedEventEnvelope>("create_relay_encrypted_event", {
+    workspaceId,
+    deviceId,
+    eventId,
+    sequence,
+    payloadJson
+  });
+
+export const createRelayEncryptedSnapshot = (
+  workspaceId: string,
+  deviceId: string,
+  snapshotId: string,
+  baseSequence: number,
+  payloadJson: string
+) =>
+  invoke<RelayEncryptedSnapshotEnvelope>("create_relay_encrypted_snapshot", {
+    workspaceId,
+    deviceId,
+    snapshotId,
+    baseSequence,
+    payloadJson
+  });
+
+export const decryptRelayEncryptedEvent = (
+  workspaceId: string,
+  deviceId: string,
+  authorSigningPublicKey: string,
+  event: RelayEncryptedEventEnvelope
+) =>
+  invoke<string>("decrypt_relay_encrypted_event", {
+    workspaceId,
+    deviceId,
+    authorSigningPublicKey,
+    event
+  });
+
+export const decryptRelayEncryptedSnapshot = (
+  workspaceId: string,
+  deviceId: string,
+  authorSigningPublicKey: string,
+  snapshot: RelayEncryptedSnapshotEnvelope
+) =>
+  invoke<string>("decrypt_relay_encrypted_snapshot", {
+    workspaceId,
+    deviceId,
+    authorSigningPublicKey,
+    snapshot
+  });
 
 export const connectSession = (input: ConnectSessionInput) =>
   invoke<TerminalTab>("connect_session", { input });

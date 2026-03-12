@@ -1,11 +1,8 @@
-import { memo, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AlertTriangle,
-  ArrowUpRight,
   Copy,
   FolderGit2,
-  GitBranch,
-  GitCommitHorizontal,
   Github,
   Globe,
   HardDriveDownload,
@@ -23,14 +20,17 @@ import type {
   GitHubAuthSession,
   GitHubDeviceFlowRecord,
   GitHubRepositoryRecord,
-  GitFileChangeRecord,
   GitRepositoryRecord,
   TerminalTab
 } from "@hermes/core";
-import { findLocalGitHubCheckouts, getGitRepositoryChangeDiff } from "@hermes/db";
+import { findLocalGitHubCheckouts } from "@hermes/db";
 import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
 import { Webview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import {
+  GitRemoteRepositoryEmptyView,
+  GitRepositoryDetailView
+} from "./components/GitRepositoryDetailView";
 
 export type GitRepositoryView = {
   id: string;
@@ -230,32 +230,14 @@ export function GitPage({
           headerEyebrow: "Repository",
           headerTitle: selectedRepository.snapshot.name,
           headerSubtitle: selectedRepository.snapshot.rootPath,
-          headerMeta: [
-            selectedRepository.snapshot.branch,
-            selectedRepository.snapshot.upstream ?? selectedRepository.snapshot.remoteName ?? "No remote",
-            selectedRepository.snapshot.clean ? "Clean working tree" : `${totalChanges} local changes`
-          ],
+          headerMeta: [],
           onBack: () => setScreen("browser")
         });
         return;
       }
 
       if (detailMode === "remote" && selectedRemoteRepository) {
-        const headerMeta = linkedRemoteRepository?.snapshot
-          ? [
-              "Local checkout connected",
-              linkedRemoteRepository.snapshot.rootPath,
-              selectedRemoteRepository.private ? "Private" : "Public",
-              `${selectedRemoteRepository.stargazerCount} stars`,
-              selectedRemoteRepository.defaultBranch
-            ]
-          : [
-              selectedRemoteRepository.private ? "Private" : "Public",
-              `${selectedRemoteRepository.stargazerCount} stars`,
-              selectedRemoteRepository.defaultBranch,
-              selectedRemoteRepository.ownerLogin
-            ];
-
+        const linkedSnapshot = linkedRemoteRepository?.snapshot ?? null;
         onToolbarContextChange({
           cloneUrl: selectedRemoteRepository.cloneUrl,
           shellRepositoryId: linkedRemoteRepository?.snapshot ? linkedRemoteRepository.id : null,
@@ -264,10 +246,10 @@ export function GitPage({
           headerTitle: selectedRemoteRepository.fullName,
           headerSubtitle:
             selectedRemoteRepository.description ||
-            (linkedRemoteRepository?.snapshot
-              ? "Local checkout detected. Commit, branch, and publish from here."
+            (linkedSnapshot
+              ? `Connected checkout: ${linkedSnapshot.rootPath}`
               : "Inspect the repository and move it into a local checkout when you want to work on it."),
-          headerMeta,
+          headerMeta: [],
           onBack: () => setScreen("browser")
         });
         return;
@@ -506,20 +488,17 @@ export function GitPage({
                   </div>
                 </div>
               ) : selectedRepository.snapshot ? (
-                <GitRepositoryDetail
+                <GitRepositoryDetailView
                   branchName={branchName}
                   busyAction={busyAction}
                   commitMessage={commitMessage}
-                  activeLocalSessions={getRepositorySessions(tabs, selectedRepository.snapshot.rootPath)}
-                  savedLocalPresets={getRepositoryPresets(localSessionPresets, selectedRepository.snapshot.rootPath)}
-                  onLaunchLocalPreset={onLaunchLocalPreset}
+                  activeSessionCount={getRepositorySessions(tabs, selectedRepository.snapshot.rootPath).length}
+                  savedPresetCount={getRepositoryPresets(localSessionPresets, selectedRepository.snapshot.rootPath).length}
                   onBranchNameChange={onBranchNameChange}
                   onCheckoutBranch={onCheckoutBranch}
                   onCommitAll={onCommitAll}
                   onCommitMessageChange={onCommitMessageChange}
                   onCreateBranch={onCreateBranch}
-                  onOpenRepositoryShell={onOpenRepositoryShell}
-                  onOpenTerminalSession={onOpenTerminalSession}
                   onPublish={onPublish}
                   repository={selectedRepository}
                 />
@@ -535,32 +514,46 @@ export function GitPage({
                 </div>
               )
             ) : selectedRemoteRepository ? (
-              <GitRemoteRepositoryDetail
-                busyAction={busyAction}
-                discoveredRepositories={discoveredRemoteRepositories[selectedRemoteRepository.id] ?? []}
-                discoveringLocalCheckouts={discoveringRemoteId === selectedRemoteRepository.id}
-                localSessionPresets={localSessionPresets}
-                localDiscoveryError={remoteDiscoveryErrors[selectedRemoteRepository.id] ?? null}
-                onCloneRepository={onCloneRepository}
-                onAddRepository={onAddRepository}
-                onCopyCloneUrl={onCopyGitHubCloneUrl}
-                onLaunchLocalPreset={onLaunchLocalPreset}
-                onOpenRepositoryShell={onOpenRepositoryShell}
-                onOpenTerminalSession={onOpenTerminalSession}
-                onPinRepositorySnapshot={onPinRepositorySnapshot}
-                onPublish={onPublish}
-                repository={selectedRemoteRepository}
-                repositories={repositories}
-                session={gitHubSession}
-                tabs={tabs}
-                branchName={branchName}
-                commitMessage={commitMessage}
-                onBranchNameChange={onBranchNameChange}
-                onCheckoutBranch={onCheckoutBranch}
-                onCommitAll={onCommitAll}
-                onCommitMessageChange={onCommitMessageChange}
-                onCreateBranch={onCreateBranch}
-              />
+              (() => {
+                const linkedRepository = findLocalRepositoryForGitHubRepository(repositories, selectedRemoteRepository);
+                if (linkedRepository?.snapshot) {
+                  return (
+                    <GitRepositoryDetailView
+                      activeSessionCount={getRepositorySessions(tabs, linkedRepository.snapshot.rootPath).length}
+                      branchName={branchName}
+                      busyAction={busyAction}
+                      commitMessage={commitMessage}
+                      context={{
+                        mode: "remote",
+                        remoteRepository: selectedRemoteRepository
+                      }}
+                      onBranchNameChange={onBranchNameChange}
+                      onCheckoutBranch={onCheckoutBranch}
+                      onCommitAll={onCommitAll}
+                      onCommitMessageChange={onCommitMessageChange}
+                      onCreateBranch={onCreateBranch}
+                      onPublish={onPublish}
+                      repository={linkedRepository}
+                      savedPresetCount={getRepositoryPresets(localSessionPresets, linkedRepository.snapshot.rootPath).length}
+                    />
+                  );
+                }
+
+                return (
+                  <GitRemoteRepositoryEmptyView
+                    busyAction={busyAction}
+                    discoveredRepositories={discoveredRemoteRepositories[selectedRemoteRepository.id] ?? []}
+                    discoveringLocalCheckouts={discoveringRemoteId === selectedRemoteRepository.id}
+                    localDiscoveryError={remoteDiscoveryErrors[selectedRemoteRepository.id] ?? null}
+                    onAddRepository={onAddRepository}
+                    onCloneRepository={onCloneRepository}
+                    onCopyCloneUrl={onCopyGitHubCloneUrl}
+                    onPinRepositorySnapshot={onPinRepositorySnapshot}
+                    repository={selectedRemoteRepository}
+                    session={gitHubSession}
+                  />
+                );
+              })()
           ) : (
             <div className="git-page__state git-page__state--wide">
                 <span className="git-page__state-icon">
@@ -1038,912 +1031,6 @@ function GitRepositoryNavigator({
   );
 }
 
-function GitRemoteRepositoryDetail({
-  repository,
-  repositories,
-  tabs,
-  discoveredRepositories,
-  discoveringLocalCheckouts,
-  localSessionPresets,
-  session,
-  busyAction,
-  localDiscoveryError,
-  onCopyCloneUrl,
-  onCloneRepository,
-  onAddRepository,
-  onOpenRepositoryShell,
-  onOpenTerminalSession,
-  onLaunchLocalPreset,
-  onPinRepositorySnapshot,
-  commitMessage,
-  branchName,
-  onCommitMessageChange,
-  onCommitAll,
-  onBranchNameChange,
-  onCreateBranch,
-  onCheckoutBranch,
-  onPublish
-}: {
-  repository: GitHubRepositoryRecord;
-  repositories: GitRepositoryView[];
-  tabs: TerminalTab[];
-  discoveredRepositories: GitRepositoryRecord[];
-  discoveringLocalCheckouts: boolean;
-  localSessionPresets: Array<{
-    id: string;
-    name: string;
-    path: string;
-  }>;
-  session: GitHubAuthSession | null;
-  busyAction: string | null;
-  localDiscoveryError: string | null;
-  onCopyCloneUrl: (cloneUrl: string) => void;
-  onCloneRepository: (repository: GitHubRepositoryRecord) => void;
-  onAddRepository: () => void;
-  onOpenRepositoryShell: (repositoryId: string) => void;
-  onOpenTerminalSession: (tabId: string) => void;
-  onLaunchLocalPreset: (presetId: string) => void;
-  onPinRepositorySnapshot: (snapshot: GitRepositoryRecord) => void;
-  commitMessage: string;
-  branchName: string;
-  onCommitMessageChange: (value: string) => void;
-  onCommitAll: (repositoryId: string) => void;
-  onBranchNameChange: (value: string) => void;
-  onCreateBranch: (repositoryId: string) => void;
-  onCheckoutBranch: (repositoryId: string, branchName: string) => void;
-  onPublish: (repositoryId: string) => void;
-}) {
-  const linkedRepository = findLocalRepositoryForGitHubRepository(repositories, repository);
-  const isCloneBusy = busyAction === `clone:${repository.id}`;
-  const discoveredLocalRepositories = discoveredRepositories.filter(
-    (candidate) => !repositories.some((repositoryView) => repositoryView.path === candidate.rootPath)
-  );
-
-  if (linkedRepository?.snapshot) {
-    return (
-      <div className="git-detail git-detail--remote">
-        <GitRepositoryDetail
-          activeLocalSessions={getRepositorySessions(tabs, linkedRepository.snapshot.rootPath)}
-          branchName={branchName}
-          busyAction={busyAction}
-          commitMessage={commitMessage}
-          onBranchNameChange={onBranchNameChange}
-          onCheckoutBranch={onCheckoutBranch}
-          onCommitAll={onCommitAll}
-          onCommitMessageChange={onCommitMessageChange}
-          onCreateBranch={onCreateBranch}
-          onLaunchLocalPreset={onLaunchLocalPreset}
-          onOpenRepositoryShell={onOpenRepositoryShell}
-          onOpenTerminalSession={onOpenTerminalSession}
-          onPublish={onPublish}
-          repository={linkedRepository}
-          savedLocalPresets={getRepositoryPresets(localSessionPresets, linkedRepository.snapshot.rootPath)}
-        />
-      </div>
-    );
-  }
-
-  return (
-    <div className="git-detail git-detail--remote">
-      <div className="git-remote-detail">
-        <section className="git-remote-detail__primary">
-          <article className="git-remote-callout">
-            <div className="git-remote-callout__header">
-              <div>
-                <p className="eyebrow">Local checkout</p>
-                <h3>
-                  {discoveringLocalCheckouts
-                    ? "Scanning common folders for a checkout"
-                    : discoveredLocalRepositories.length > 0
-                      ? "Hermes found local checkout candidates"
-                      : "Clone or attach this repository"}
-                </h3>
-              </div>
-              <span className="git-page__meta">
-                {discoveringLocalCheckouts
-                  ? "Scanning"
-                  : discoveredLocalRepositories.length > 0
-                    ? `${discoveredLocalRepositories.length} found`
-                    : "Not detected"}
-              </span>
-            </div>
-
-            <div className="git-remote-callout__body">
-              <strong>
-                {discoveringLocalCheckouts
-                  ? "Searching your common workspace folders."
-                  : discoveredLocalRepositories.length > 0
-                    ? "Choose one of the local checkouts Hermes found."
-                    : "This repository is not connected locally yet."}
-              </strong>
-              <span>
-                {discoveringLocalCheckouts
-                  ? "Hermes checks your current directory, Documents, Desktop, code, dev, and repo folders for matching Git remotes."
-                  : discoveredLocalRepositories.length > 0
-                    ? "A single match will be pinned automatically. If there are multiple matches, pick the one you want in Hermes."
-                    : `Clone ${repository.fullName} from here, or use Pin checkout in the Git toolbar.`}
-              </span>
-            </div>
-
-            <div className="git-remote-callout__actions">
-              <button
-                className="primary-button"
-                disabled={isCloneBusy}
-                onClick={() => onCloneRepository(repository)}
-                type="button"
-              >
-                <HardDriveDownload size={14} />
-                {isCloneBusy ? "Cloning..." : "Clone this repository"}
-              </button>
-            </div>
-          </article>
-
-          {localDiscoveryError ? (
-            <section className="git-panel">
-              <div className="git-panel__empty">
-                <strong>Local checkout scan failed</strong>
-                <span>{localDiscoveryError}</span>
-              </div>
-            </section>
-          ) : null}
-
-          {discoveredLocalRepositories.length > 0 ? (
-            <section className="git-panel">
-              <div className="git-panel__header">
-                <div>
-                  <p className="eyebrow">Discovered</p>
-                  <h3>Local checkout candidates</h3>
-                </div>
-                <span className="git-page__meta">
-                  {discoveredLocalRepositories.length} path
-                  {discoveredLocalRepositories.length === 1 ? "" : "s"}
-                </span>
-              </div>
-
-              <div className="git-discovery-list">
-                {discoveredLocalRepositories.map((checkout) => (
-                  <div className="git-discovery-row" key={checkout.rootPath}>
-                    <div className="git-discovery-row__body">
-                      <strong>{checkout.name}</strong>
-                      <span>{checkout.rootPath}</span>
-                      <span>
-                        {checkout.branch}
-                        {checkout.upstream ? ` -> ${checkout.upstream}` : ""}
-                      </span>
-                    </div>
-                    <button
-                      className="ghost-button"
-                      onClick={() => onPinRepositorySnapshot(checkout)}
-                      type="button"
-                    >
-                      Pin checkout
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </section>
-          ) : null}
-        </section>
-
-        <aside className="git-remote-detail__aside">
-          <section className="git-panel">
-            <div className="git-panel__header">
-              <div>
-                <p className="eyebrow">Remote</p>
-                <h3>GitHub snapshot</h3>
-              </div>
-            </div>
-
-            <div className="git-remote-card">
-              <div className="git-remote-card__top">
-                <div className="git-remote-card__identity">
-                  <strong>{repository.fullName}</strong>
-                  <span>{session ? `Signed in as @${session.login}` : "Browsing GitHub metadata."}</span>
-                </div>
-              </div>
-              <div className="git-remote-card__footer">
-                <div className="git-remote-card__details">
-                  <span>{repository.htmlUrl}</span>
-                  <span>{repository.cloneUrl}</span>
-                </div>
-              </div>
-            </div>
-          </section>
-        </aside>
-      </div>
-    </div>
-  );
-}
-
-type GitRepositoryDetailProps = {
-  repository: GitRepositoryView;
-  activeLocalSessions: TerminalTab[];
-  savedLocalPresets: Array<{
-    id: string;
-    name: string;
-    path: string;
-  }>;
-  commitMessage: string;
-  branchName: string;
-  busyAction: string | null;
-  onOpenRepositoryShell: (repositoryId: string) => void;
-  onOpenTerminalSession: (tabId: string) => void;
-  onLaunchLocalPreset: (presetId: string) => void;
-  onCommitMessageChange: (value: string) => void;
-  onCommitAll: (repositoryId: string) => void;
-  onBranchNameChange: (value: string) => void;
-  onCreateBranch: (repositoryId: string) => void;
-  onCheckoutBranch: (repositoryId: string, branchName: string) => void;
-  onPublish: (repositoryId: string) => void;
-};
-
-function GitRepositoryDetail({
-  repository,
-  activeLocalSessions,
-  savedLocalPresets,
-  commitMessage,
-  branchName,
-  busyAction,
-  onOpenRepositoryShell,
-  onOpenTerminalSession,
-  onLaunchLocalPreset,
-  onCommitMessageChange,
-  onCommitAll,
-  onBranchNameChange,
-  onCreateBranch,
-  onCheckoutBranch,
-  onPublish
-}: GitRepositoryDetailProps) {
-  const snapshot = repository.snapshot!;
-  const isCommitBusy = busyAction === `commit:${repository.id}`;
-  const isBranchBusy = busyAction === `branch:${repository.id}`;
-  const isPublishBusy = busyAction === `push:${repository.id}`;
-  const [selectedChangeKey, setSelectedChangeKey] = useState<string | null>(() =>
-    snapshot.changes[0] ? getGitChangeKey(snapshot.changes[0]) : null
-  );
-  const [selectedBranchName, setSelectedBranchName] = useState<string>(() => {
-    const currentBranch = snapshot.branches.find((branch) => branch.current);
-    return currentBranch?.name ?? snapshot.branches[0]?.name ?? "";
-  });
-  const [selectedDiff, setSelectedDiff] = useState("");
-  const [diffLoading, setDiffLoading] = useState(false);
-  const [diffError, setDiffError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const firstChangeKey = snapshot.changes[0] ? getGitChangeKey(snapshot.changes[0]) : null;
-    setSelectedChangeKey((current) =>
-      current && snapshot.changes.some((change) => getGitChangeKey(change) === current) ? current : firstChangeKey
-    );
-  }, [repository.id, snapshot.changes]);
-
-  const selectedChange =
-    snapshot.changes.find((change) => getGitChangeKey(change) === selectedChangeKey) ?? snapshot.changes[0] ?? null;
-  const selectedBranch =
-    snapshot.branches.find((branch) => branch.name === selectedBranchName) ?? snapshot.branches[0] ?? null;
-
-  useEffect(() => {
-    const currentBranch = snapshot.branches.find((branch) => branch.current);
-    const fallback = currentBranch?.name ?? snapshot.branches[0]?.name ?? "";
-    setSelectedBranchName((current) =>
-      current && snapshot.branches.some((branch) => branch.name === current) ? current : fallback
-    );
-  }, [snapshot.branches]);
-
-  useEffect(() => {
-    if (!selectedChange) {
-      setSelectedDiff("");
-      setDiffError(null);
-      setDiffLoading(false);
-      return;
-    }
-
-    let cancelled = false;
-    setDiffLoading(true);
-    setDiffError(null);
-
-    void getGitRepositoryChangeDiff(snapshot.rootPath, selectedChange.path)
-      .then((diff) => {
-        if (!cancelled) {
-          setSelectedDiff(diff);
-        }
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          setSelectedDiff("");
-          setDiffError(error instanceof Error ? error.message : String(error));
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setDiffLoading(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedChange, snapshot.rootPath]);
-
-  return (
-    <div className="git-detail">
-      <div className="git-detail__body">
-        <section className="git-workbench" aria-label="Repository workbench">
-          <section className="git-workbench__section git-workbench__section--commit">
-            <div className="git-workbench__header">
-              <div>
-                <p className="eyebrow">Commit</p>
-                <h3>Commit changes</h3>
-              </div>
-            </div>
-            <label className="field field--full">
-              <span>Commit message</span>
-              <input
-                onChange={(event) => onCommitMessageChange(event.target.value)}
-                placeholder="Summarize this work clearly"
-                value={commitMessage}
-              />
-            </label>
-            <button
-              className="primary-button"
-              disabled={snapshot.clean || commitMessage.trim().length === 0 || isCommitBusy}
-              onClick={() => onCommitAll(repository.id)}
-              type="button"
-            >
-              <GitCommitHorizontal size={14} />
-              {isCommitBusy ? "Committing..." : "Commit all changes"}
-            </button>
-          </section>
-
-          <section className="git-workbench__section git-workbench__section--branch">
-            <div className="git-workbench__header">
-              <div>
-                <p className="eyebrow">Branch</p>
-                <h3>Create branch</h3>
-              </div>
-            </div>
-            <label className="field field--full">
-              <span>New branch</span>
-              <input
-                onChange={(event) => onBranchNameChange(event.target.value)}
-                placeholder="feature/hermes-git"
-                value={branchName}
-              />
-            </label>
-            <button
-              className="ghost-button"
-              disabled={branchName.trim().length === 0 || isBranchBusy}
-              onClick={() => onCreateBranch(repository.id)}
-              type="button"
-            >
-              <GitBranch size={14} />
-              {isBranchBusy ? "Creating..." : "Create branch"}
-            </button>
-          </section>
-
-          <section className="git-workbench__section git-workbench__section--publish">
-            <div className="git-workbench__header">
-              <div>
-                <p className="eyebrow">Publish</p>
-                <h3>Push branch</h3>
-              </div>
-            </div>
-            <div className="git-workbench__meta">
-              <span className="git-pill">{snapshot.upstream ?? snapshot.remoteName ?? "No remote"}</span>
-              {snapshot.ahead > 0 ? <span className="git-pill">{snapshot.ahead} ahead</span> : null}
-              {snapshot.behind > 0 ? <span className="git-pill">{snapshot.behind} behind</span> : null}
-            </div>
-            <button
-              className="primary-button"
-              disabled={!snapshot.hasRemote || isPublishBusy}
-              onClick={() => onPublish(repository.id)}
-              type="button"
-            >
-              <ArrowUpRight size={14} />
-              {isPublishBusy ? "Publishing..." : "Publish"}
-            </button>
-          </section>
-
-          <section className="git-workbench__section git-workbench__section--review">
-            <div className="git-workbench__header">
-              <div>
-                <p className="eyebrow">Review</p>
-                <h3>Review draft</h3>
-              </div>
-            </div>
-            {snapshot.review ? (
-              <div className="git-review git-review--compact">
-                <div className="git-review__headline">
-                  <strong>{snapshot.review.commitCount} commits ready for review</strong>
-                  <span>
-                    Targeting {snapshot.review.baseBranch} across {snapshot.review.changedFiles} file
-                    {snapshot.review.changedFiles === 1 ? "" : "s"}.
-                  </span>
-                </div>
-                <div className="git-review__meta">
-                  <span>{snapshot.lastCommitSummary ?? "No commits yet"}</span>
-                  <span>{snapshot.lastCommitRelative ?? "No recent history"}</span>
-                </div>
-              </div>
-            ) : (
-              <div className="git-panel__empty">
-                <strong>No review draft</strong>
-                <span>Create or switch to a feature branch to start one.</span>
-              </div>
-            )}
-          </section>
-
-          <section className="git-workbench__section git-workbench__section--branches">
-            <div className="git-workbench__header">
-              <div>
-                <p className="eyebrow">Branches</p>
-                <h3>Switch branch</h3>
-              </div>
-            </div>
-            <div className="git-workbench__branch-control">
-              <label className="field field--full">
-                <span>Choose branch</span>
-                <select onChange={(event) => setSelectedBranchName(event.target.value)} value={selectedBranchName}>
-                  {snapshot.branches.map((branch) => (
-                    <option key={branch.name} value={branch.name}>
-                      {branch.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="git-workbench__branch-meta">
-                <span className="git-pill git-pill--active">
-                  <GitBranch size={12} />
-                  {snapshot.branch}
-                </span>
-                <span className="git-page__meta">{selectedBranch?.upstream ?? "No upstream branch"}</span>
-              </div>
-              <button
-                className="ghost-button"
-                disabled={
-                  !selectedBranch ||
-                  selectedBranch.current ||
-                  busyAction === `checkout:${repository.id}:${selectedBranch.name}`
-                }
-                onClick={() => selectedBranch && onCheckoutBranch(repository.id, selectedBranch.name)}
-                type="button"
-              >
-                {selectedBranch && busyAction === `checkout:${repository.id}:${selectedBranch.name}`
-                  ? "Switching..."
-                  : selectedBranch?.current
-                    ? "Checked out"
-                    : "Checkout"}
-              </button>
-            </div>
-          </section>
-
-          <section className="git-workbench__section git-workbench__section--history">
-            <div className="git-workbench__header">
-              <div>
-                <p className="eyebrow">History</p>
-                <h3>Recent</h3>
-              </div>
-            </div>
-            {snapshot.recentCommits.length === 0 ? (
-              <div className="git-panel__empty">
-                <strong>No commit history</strong>
-                <span>This repository has not recorded any commits yet.</span>
-              </div>
-            ) : (
-              <div className="git-commit-list git-commit-list--compact">
-                {snapshot.recentCommits.slice(0, 2).map((commit) => (
-                  <div className="git-commit-row" key={commit.id}>
-                    <div className="git-commit-row__body">
-                      <strong>{commit.summary}</strong>
-                      <span>
-                        {commit.author} | {commit.relativeDate}
-                      </span>
-                    </div>
-                    <span className="git-commit-row__sha">{commit.id.slice(0, 7)}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-        </section>
-
-        <div className="git-detail__inspector">
-          <section className="git-panel git-panel--changes-nav">
-            <div className="git-panel__header">
-              <div>
-                <p className="eyebrow">Changes</p>
-                <h3>Files</h3>
-              </div>
-              <span className="git-page__meta">
-                {snapshot.changes.length} file{snapshot.changes.length === 1 ? "" : "s"}
-              </span>
-            </div>
-
-            {snapshot.changes.length === 0 ? (
-              <div className="git-panel__empty">
-                <strong>Nothing pending</strong>
-                <span>The working tree is clean.</span>
-              </div>
-            ) : (
-              <div className="git-change-list">
-                {snapshot.changes.map((change) => (
-                  <button
-                    className={`git-change-row git-change-row--selectable ${
-                      selectedChange && getGitChangeKey(change) === getGitChangeKey(selectedChange)
-                        ? "git-change-row--active"
-                        : ""
-                    }`}
-                    key={`${change.path}:${change.status}:${change.staged ? "staged" : "unstaged"}`}
-                    onClick={() => setSelectedChangeKey(getGitChangeKey(change))}
-                    type="button"
-                  >
-                    <span className={`git-pill git-pill--status git-pill--${change.status}`}>{change.status}</span>
-                    <div className="git-change-row__body">
-                      <strong>{change.path}</strong>
-                      <span>{getGitChangeSummary(change)}</span>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            )}
-          </section>
-
-          <section className="git-panel git-panel--diff">
-            <div className="git-panel__header">
-              <div>
-                <p className="eyebrow">Diff</p>
-                <h3>{selectedChange ? selectedChange.path : "Select a file"}</h3>
-              </div>
-              {selectedChange ? (
-                <span className="git-page__meta">
-                  {selectedChange.staged ? "Staged + working tree" : "Working tree"}
-                </span>
-              ) : null}
-            </div>
-
-            <GitDiffPreview change={selectedChange} diff={selectedDiff} error={diffError} loading={diffLoading} />
-          </section>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-const GIT_DIFF_ROW_HEIGHT = 25;
-const GIT_DIFF_OVERSCAN = 40;
-
-const GitDiffPreview = memo(function GitDiffPreview({
-  change,
-  diff,
-  error,
-  loading
-}: {
-  change: GitFileChangeRecord | null;
-  diff: string;
-  error: string | null;
-  loading: boolean;
-}) {
-  const viewportRef = useRef<HTMLDivElement | null>(null);
-  const [scrollTop, setScrollTop] = useState(0);
-  const [viewportHeight, setViewportHeight] = useState(520);
-  const deferredDiff = useDeferredValue(diff);
-  const rows = useMemo(() => buildGitDiffRows(deferredDiff), [deferredDiff]);
-
-  useEffect(() => {
-    const viewport = viewportRef.current;
-    if (!viewport) {
-      return;
-    }
-
-    const updateViewport = () => {
-      setViewportHeight(viewport.clientHeight);
-    };
-
-    updateViewport();
-    const observer = new ResizeObserver(updateViewport);
-    observer.observe(viewport);
-    return () => observer.disconnect();
-  }, []);
-
-  useEffect(() => {
-    const viewport = viewportRef.current;
-    if (!viewport) {
-      return;
-    }
-
-    viewport.scrollTop = 0;
-    setScrollTop(0);
-  }, [change?.path]);
-
-  if (!change) {
-    return (
-      <div className="git-panel__empty">
-        <strong>Select a file</strong>
-        <span>Choose a changed file to inspect its diff here.</span>
-      </div>
-    );
-  }
-
-  if (loading) {
-    return (
-      <div className="git-panel__empty">
-        <strong>Loading diff</strong>
-        <span>Hermes is reading the current patch for {change.path}.</span>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="git-panel__empty">
-        <strong>Diff unavailable</strong>
-        <span>{error}</span>
-      </div>
-    );
-  }
-
-  if (!diff.trim()) {
-    return (
-      <div className="git-panel__empty">
-        <strong>No diff output</strong>
-        <span>The selected file did not return any patch content.</span>
-      </div>
-    );
-  }
-
-  const visibleCount = Math.max(1, Math.ceil(viewportHeight / GIT_DIFF_ROW_HEIGHT) + GIT_DIFF_OVERSCAN * 2);
-  const startIndex = Math.max(0, Math.floor(scrollTop / GIT_DIFF_ROW_HEIGHT) - GIT_DIFF_OVERSCAN);
-  const endIndex = Math.min(rows.length, startIndex + visibleCount);
-  const visibleRows = rows.slice(startIndex, endIndex);
-  const topSpacerHeight = startIndex * GIT_DIFF_ROW_HEIGHT;
-  const bottomSpacerHeight = Math.max(0, (rows.length - endIndex) * GIT_DIFF_ROW_HEIGHT);
-
-  return (
-    <div
-      className="git-diff-view git-diff-view--split"
-      onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
-      ref={viewportRef}
-    >
-      <div className="git-diff-split__header">
-        <span>Before</span>
-        <span>After</span>
-      </div>
-      <div className="git-diff-split__body">
-        {topSpacerHeight > 0 ? <div className="git-diff-split__spacer" style={{ height: topSpacerHeight }} /> : null}
-        {visibleRows.map((row, index) => (
-          <div
-            className={`git-diff-split__row git-diff-split__row--${row.kind}`}
-            key={`${startIndex + index}:${row.key}`}
-          >
-            <div className="git-diff-split__cell git-diff-split__cell--line">{row.leftNumber ?? ""}</div>
-            <div className={`git-diff-split__cell git-diff-split__cell--code ${row.leftClassName}`}>
-              {row.leftText || " "}
-            </div>
-            <div className="git-diff-split__cell git-diff-split__cell--line">{row.rightNumber ?? ""}</div>
-            <div className={`git-diff-split__cell git-diff-split__cell--code ${row.rightClassName}`}>
-              {row.rightText || " "}
-            </div>
-          </div>
-        ))}
-        {bottomSpacerHeight > 0 ? <div className="git-diff-split__spacer" style={{ height: bottomSpacerHeight }} /> : null}
-      </div>
-    </div>
-  );
-});
-
-function GitRepositorySessionsPanel({
-  activeSessions,
-  presets,
-  onOpenRepositoryShell,
-  onOpenTerminalSession,
-  onLaunchLocalPreset
-}: {
-  activeSessions: TerminalTab[];
-  presets: Array<{
-    id: string;
-    name: string;
-    path: string;
-  }>;
-  onOpenRepositoryShell: () => void;
-  onOpenTerminalSession: (tabId: string) => void;
-  onLaunchLocalPreset: (presetId: string) => void;
-}) {
-  return (
-    <div className="git-session-stack">
-      {activeSessions.length === 0 && presets.length === 0 ? (
-        <div className="git-panel__empty">
-          <strong>No local sessions yet</strong>
-          <span>Open a shell from this repository page or save a local path for quick access.</span>
-          <button className="ghost-button" onClick={onOpenRepositoryShell} type="button">
-            <TerminalSquare size={14} />
-            Open shell
-          </button>
-        </div>
-      ) : (
-        <>
-          {activeSessions.length > 0 ? (
-            <div className="git-session-group">
-              <div className="git-session-group__header">
-                <span className="git-page__meta">
-                  {activeSessions.length} live shell{activeSessions.length === 1 ? "" : "s"}
-                </span>
-              </div>
-              <div className="git-session-list">
-                {activeSessions.map((session) => (
-                  <div className="git-session-row" key={session.id}>
-                    <div className="git-session-row__body">
-                      <strong>{session.title}</strong>
-                      <span>{session.cwd ?? "Local terminal"}</span>
-                    </div>
-                    <button className="ghost-button" onClick={() => onOpenTerminalSession(session.id)} type="button">
-                      Resume
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          {presets.length > 0 ? (
-            <div className="git-session-group">
-              <div className="git-session-group__header">
-                <span className="git-page__meta">
-                  {presets.length} saved path{presets.length === 1 ? "" : "s"}
-                </span>
-              </div>
-              <div className="git-session-list">
-                {presets.map((preset) => (
-                  <div className="git-session-row" key={preset.id}>
-                    <div className="git-session-row__body">
-                      <strong>{preset.name}</strong>
-                      <span>{preset.path}</span>
-                    </div>
-                    <button className="ghost-button" onClick={() => onLaunchLocalPreset(preset.id)} type="button">
-                      Open
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-        </>
-      )}
-    </div>
-  );
-}
-
-function getGitChangeKey(change: GitFileChangeRecord) {
-  return `${change.path}:${change.status}:${change.staged ? "staged" : "unstaged"}`;
-}
-
-function getGitChangeSummary(change: GitFileChangeRecord) {
-  if (change.previousPath) {
-    return `${change.previousPath} -> ${change.path}`;
-  }
-
-  return change.staged ? "Staged change" : "Working tree change";
-}
-
-type GitDiffRow = {
-  key: string;
-  kind: "meta" | "hunk" | "context" | "added" | "removed" | "changed";
-  leftNumber: number | null;
-  rightNumber: number | null;
-  leftText: string;
-  rightText: string;
-  leftClassName: string;
-  rightClassName: string;
-};
-
-function buildGitDiffRows(diff: string): GitDiffRow[] {
-  const rows: GitDiffRow[] = [];
-  const lines = diff.split("\n");
-  let leftLine = 0;
-  let rightLine = 0;
-  let removedBuffer: Array<{ number: number; text: string }> = [];
-  let addedBuffer: Array<{ number: number; text: string }> = [];
-
-  const flushBuffers = () => {
-    const count = Math.max(removedBuffer.length, addedBuffer.length);
-    for (let index = 0; index < count; index += 1) {
-      const removed = removedBuffer[index] ?? null;
-      const added = addedBuffer[index] ?? null;
-      rows.push({
-        key: `change:${rows.length}:${removed?.number ?? "x"}:${added?.number ?? "x"}`,
-        kind: removed && added ? "changed" : removed ? "removed" : "added",
-        leftNumber: removed?.number ?? null,
-        rightNumber: added?.number ?? null,
-        leftText: removed?.text ?? "",
-        rightText: added?.text ?? "",
-        leftClassName: removed ? "git-diff-split__cell--removed" : "",
-        rightClassName: added ? "git-diff-split__cell--added" : ""
-      });
-    }
-
-    removedBuffer = [];
-    addedBuffer = [];
-  };
-
-  for (const line of lines) {
-    if (line.startsWith("diff --git") || line.startsWith("index ") || line.startsWith("--- ") || line.startsWith("+++ ")) {
-      flushBuffers();
-      rows.push({
-        key: `meta:${rows.length}:${line}`,
-        kind: "meta",
-        leftNumber: null,
-        rightNumber: null,
-        leftText: line,
-        rightText: line,
-        leftClassName: "git-diff-split__cell--meta",
-        rightClassName: "git-diff-split__cell--meta"
-      });
-      continue;
-    }
-
-    if (line.startsWith("@@")) {
-      flushBuffers();
-      const match = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-      leftLine = match ? Number(match[1]) : leftLine;
-      rightLine = match ? Number(match[2]) : rightLine;
-      rows.push({
-        key: `hunk:${rows.length}:${line}`,
-        kind: "hunk",
-        leftNumber: null,
-        rightNumber: null,
-        leftText: line,
-        rightText: line,
-        leftClassName: "git-diff-split__cell--hunk",
-        rightClassName: "git-diff-split__cell--hunk"
-      });
-      continue;
-    }
-
-    if (line.startsWith("-")) {
-      removedBuffer.push({ number: leftLine, text: line.slice(1) });
-      leftLine += 1;
-      continue;
-    }
-
-    if (line.startsWith("+")) {
-      addedBuffer.push({ number: rightLine, text: line.slice(1) });
-      rightLine += 1;
-      continue;
-    }
-
-    flushBuffers();
-
-    if (line.startsWith("\\")) {
-      rows.push({
-        key: `meta:${rows.length}:${line}`,
-        kind: "meta",
-        leftNumber: null,
-        rightNumber: null,
-        leftText: line,
-        rightText: line,
-        leftClassName: "git-diff-split__cell--meta",
-        rightClassName: "git-diff-split__cell--meta"
-      });
-      continue;
-    }
-
-    rows.push({
-      key: `context:${rows.length}:${leftLine}:${rightLine}`,
-      kind: "context",
-      leftNumber: leftLine,
-      rightNumber: rightLine,
-      leftText: line.startsWith(" ") ? line.slice(1) : line,
-      rightText: line.startsWith(" ") ? line.slice(1) : line,
-      leftClassName: "",
-      rightClassName: ""
-    });
-    leftLine += 1;
-    rightLine += 1;
-  }
-
-  flushBuffers();
-
-  return rows;
-}
-
 function matchesRepositorySearch(repository: GitRepositoryView, search: string) {
   const query = search.trim().toLowerCase();
   if (!query) {
@@ -1963,6 +1050,10 @@ function matchesRepositorySearch(repository: GitRepositoryView, search: string) 
   ];
 
   return haystack.some((value) => value.toLowerCase().includes(query));
+}
+
+function getRepositoryPendingChangeCount(snapshot: GitRepositoryRecord) {
+  return snapshot.stagedCount + snapshot.changedCount + snapshot.untrackedCount + snapshot.conflictedCount;
 }
 
 function findLocalRepositoryForGitHubRepository(
@@ -2036,6 +1127,7 @@ function getRepositoryCloneUrl(repository: GitRepositoryRecord) {
 
   return preferredRemote?.pushUrl || preferredRemote?.fetchUrl || null;
 }
+
 
 function loadGitSetupComplete() {
   if (typeof window === "undefined") {

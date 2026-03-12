@@ -8,6 +8,7 @@ import type {
 import type {
   RelayDevicePlatform,
   RelayDeviceRole,
+  RelayDeviceStatus,
   RelayWorkspaceDeviceRecord
 } from "@hermes/sync";
 import { noxTheme } from "@hermes/ui";
@@ -59,10 +60,43 @@ export type HermesSettings = {
   customTerminalProgram: string;
   customTerminalArgs: string;
   customTerminalLabel: string;
+  syncIncludesSettings: boolean;
+  syncIncludesSecrets: boolean;
+  syncIncludesTmuxMetadata: boolean;
+  syncIncludesHistory: boolean;
   syncIncludesCommands: boolean;
   syncIncludesPinnedRepositories: boolean;
   lastExportedAt: string | null;
   lastImportedAt: string | null;
+};
+
+export type SyncedKeychainItem = {
+  name: string;
+  kind: ServerAuthKind;
+  secret: string;
+  publicKey: string | null;
+};
+
+export type SyncedTmuxMetadataRecord = {
+  serverRef: string;
+  serverLabel: string;
+  sessionNames: string[];
+  lastAttachedSession: string | null;
+  lastSeenAt: string;
+};
+
+export type SyncedTerminalHistoryRecord = {
+  id: string;
+  targetKind: "local" | "server";
+  serverRef: string | null;
+  serverLabel: string | null;
+  title: string;
+  cwd: string | null;
+  tmuxSession: string | null;
+  startedAt: string;
+  endedAt: string;
+  exitCode: number | null;
+  reason: string;
 };
 
 type ThemeTerminalPalette = {
@@ -115,9 +149,9 @@ export type HermesThemeDefinition = {
 };
 
 export type HermesSyncBundle = {
-  version: 1;
+  version: 2;
   exportedAt: string;
-  settings: HermesSettings;
+  settings: HermesSettings | null;
   projects: Array<{
     id: string;
     name: string;
@@ -137,8 +171,11 @@ export type HermesSyncBundle = {
     notes: string;
   }>;
   localSessionPresets: LocalSessionPreset[];
-  localGitRepositories: LocalGitRepository[];
-  terminalCommands: TerminalCommandRecord[];
+  localGitRepositories: LocalGitRepository[] | null;
+  terminalCommands: TerminalCommandRecord[] | null;
+  keychainItems: SyncedKeychainItem[] | null;
+  tmuxMetadata: SyncedTmuxMetadataRecord[] | null;
+  sessionHistory: SyncedTerminalHistoryRecord[] | null;
 };
 
 export const HERMES_SETTINGS_KEY = "hermes.settings";
@@ -165,8 +202,16 @@ export type RelayClientState = {
   relayId: string | null;
   currentDeviceId: string | null;
   currentDeviceRole: RelayDeviceRole | null;
+  currentDeviceStatus: RelayDeviceStatus | null;
   adminToken: string | null;
   devices: RelayWorkspaceDeviceRecord[];
+  latestSequence: number;
+  latestSnapshotId: string | null;
+  latestSnapshotAt: string | null;
+  lastAppliedSequence: number;
+  lastAppliedPayloadHash: string | null;
+  lastAppliedBundleJson: string | null;
+  syncConflict: string | null;
   lastConnectedAt: string | null;
   lastError: string | null;
 };
@@ -485,6 +530,10 @@ export function createDefaultHermesSettings(platform: DevicePlatform): HermesSet
     customTerminalProgram: "",
     customTerminalArgs: "",
     customTerminalLabel: "",
+    syncIncludesSettings: false,
+    syncIncludesSecrets: true,
+    syncIncludesTmuxMetadata: true,
+    syncIncludesHistory: true,
     syncIncludesCommands: true,
     syncIncludesPinnedRepositories: true,
     lastExportedAt: null,
@@ -529,7 +578,7 @@ export function createDefaultRelayClientState(platform: DevicePlatform): RelayCl
   return {
     localDeviceId: createRelayLocalDeviceId(),
     workspaceName: "",
-    deviceName: defaultRelayDeviceName(platform),
+    deviceName: getDefaultRelayDeviceName(platform),
     hostServerId: null,
     installRuntime: "docker",
     relayPort: 8787,
@@ -547,8 +596,16 @@ export function createDefaultRelayClientState(platform: DevicePlatform): RelayCl
     relayId: null,
     currentDeviceId: null,
     currentDeviceRole: null,
+    currentDeviceStatus: null,
     adminToken: null,
     devices: [],
+    latestSequence: 0,
+    latestSnapshotId: null,
+    latestSnapshotAt: null,
+    lastAppliedSequence: 0,
+    lastAppliedPayloadHash: null,
+    lastAppliedBundleJson: null,
+    syncConflict: null,
     lastConnectedAt: null,
     lastError: null
   };
@@ -607,6 +664,22 @@ export function sanitizeHermesSettings(
       typeof candidate.customTerminalArgs === "string" ? candidate.customTerminalArgs : defaults.customTerminalArgs,
     customTerminalLabel:
       typeof candidate.customTerminalLabel === "string" ? candidate.customTerminalLabel : defaults.customTerminalLabel,
+    syncIncludesSettings:
+      typeof candidate.syncIncludesSettings === "boolean"
+        ? candidate.syncIncludesSettings
+        : defaults.syncIncludesSettings,
+    syncIncludesSecrets:
+      typeof candidate.syncIncludesSecrets === "boolean"
+        ? candidate.syncIncludesSecrets
+        : defaults.syncIncludesSecrets,
+    syncIncludesTmuxMetadata:
+      typeof candidate.syncIncludesTmuxMetadata === "boolean"
+        ? candidate.syncIncludesTmuxMetadata
+        : defaults.syncIncludesTmuxMetadata,
+    syncIncludesHistory:
+      typeof candidate.syncIncludesHistory === "boolean"
+        ? candidate.syncIncludesHistory
+        : defaults.syncIncludesHistory,
     syncIncludesCommands:
       typeof candidate.syncIncludesCommands === "boolean" ? candidate.syncIncludesCommands : defaults.syncIncludesCommands,
     syncIncludesPinnedRepositories:
@@ -706,6 +779,12 @@ export function sanitizeRelayClientState(
       candidate.currentDeviceRole === "master" || candidate.currentDeviceRole === "member"
         ? candidate.currentDeviceRole
         : defaults.currentDeviceRole,
+    currentDeviceStatus:
+      candidate.currentDeviceStatus === "pending" ||
+      candidate.currentDeviceStatus === "approved" ||
+      candidate.currentDeviceStatus === "revoked"
+        ? candidate.currentDeviceStatus
+        : defaults.currentDeviceStatus,
     adminToken:
       typeof candidate.adminToken === "string" || candidate.adminToken === null
         ? candidate.adminToken
@@ -714,6 +793,33 @@ export function sanitizeRelayClientState(
       Array.isArray(candidate.devices) && candidate.devices.every(isRelayWorkspaceDeviceRecord)
         ? candidate.devices
         : defaults.devices,
+    latestSequence: clampNumber(candidate.latestSequence, 0, Number.MAX_SAFE_INTEGER, defaults.latestSequence),
+    latestSnapshotId:
+      typeof candidate.latestSnapshotId === "string" || candidate.latestSnapshotId === null
+        ? candidate.latestSnapshotId
+        : defaults.latestSnapshotId,
+    latestSnapshotAt:
+      typeof candidate.latestSnapshotAt === "string" || candidate.latestSnapshotAt === null
+        ? candidate.latestSnapshotAt
+        : defaults.latestSnapshotAt,
+    lastAppliedSequence: clampNumber(
+      candidate.lastAppliedSequence,
+      0,
+      Number.MAX_SAFE_INTEGER,
+      defaults.lastAppliedSequence
+    ),
+    lastAppliedPayloadHash:
+      typeof candidate.lastAppliedPayloadHash === "string" || candidate.lastAppliedPayloadHash === null
+        ? candidate.lastAppliedPayloadHash
+        : defaults.lastAppliedPayloadHash,
+    lastAppliedBundleJson:
+      typeof candidate.lastAppliedBundleJson === "string" || candidate.lastAppliedBundleJson === null
+        ? candidate.lastAppliedBundleJson
+        : defaults.lastAppliedBundleJson,
+    syncConflict:
+      typeof candidate.syncConflict === "string" || candidate.syncConflict === null
+        ? candidate.syncConflict
+        : defaults.syncConflict,
     lastConnectedAt:
       typeof candidate.lastConnectedAt === "string" || candidate.lastConnectedAt === null
         ? candidate.lastConnectedAt
@@ -779,15 +885,18 @@ export function resolveLocalTerminalLaunch(
 }
 
 export function buildHermesSyncBundle(input: {
-  settings: HermesSettings;
+  settings: HermesSettings | null;
   projects: ProjectRecord[];
   servers: ServerRecord[];
   localSessionPresets: LocalSessionPreset[];
-  localGitRepositories: LocalGitRepository[];
-  terminalCommands: TerminalCommandRecord[];
+  localGitRepositories: LocalGitRepository[] | null;
+  terminalCommands: TerminalCommandRecord[] | null;
+  keychainItems: SyncedKeychainItem[] | null;
+  tmuxMetadata: SyncedTmuxMetadataRecord[] | null;
+  sessionHistory: SyncedTerminalHistoryRecord[] | null;
 }): HermesSyncBundle {
   return {
-    version: 1,
+    version: 2,
     exportedAt: new Date().toISOString(),
     settings: input.settings,
     projects: input.projects.map((project) => ({
@@ -810,7 +919,10 @@ export function buildHermesSyncBundle(input: {
     })),
     localSessionPresets: input.localSessionPresets,
     localGitRepositories: input.localGitRepositories,
-    terminalCommands: input.terminalCommands
+    terminalCommands: input.terminalCommands,
+    keychainItems: input.keychainItems,
+    tmuxMetadata: input.tmuxMetadata,
+    sessionHistory: input.sessionHistory
   };
 }
 
@@ -819,7 +931,7 @@ export function parseHermesSyncBundle(
   platform: DevicePlatform
 ): HermesSyncBundle {
   const parsed = JSON.parse(raw) as unknown;
-  if (!isRecord(parsed) || parsed.version !== 1) {
+  if (!isRecord(parsed) || (parsed.version !== 1 && parsed.version !== 2)) {
     throw new Error("Unsupported Hermes sync bundle.");
   }
 
@@ -843,28 +955,61 @@ export function parseHermesSyncBundle(
   }
 
   if (
-    !Array.isArray(parsed.localGitRepositories) ||
-    !parsed.localGitRepositories.every(isLocalGitRepository)
+    !(
+      parsed.version === 2
+        ? parsed.localGitRepositories === null ||
+          (Array.isArray(parsed.localGitRepositories) &&
+            parsed.localGitRepositories.every(isLocalGitRepository))
+        : Array.isArray(parsed.localGitRepositories) &&
+          parsed.localGitRepositories.every(isLocalGitRepository)
+    )
   ) {
     throw new Error("Sync bundle pinned repositories are invalid.");
   }
 
   if (
-    !Array.isArray(parsed.terminalCommands) ||
-    !parsed.terminalCommands.every(isTerminalCommandRecord)
+    !(parsed.terminalCommands === null || parsed.version === 1 || Array.isArray(parsed.terminalCommands)) ||
+    (Array.isArray(parsed.terminalCommands) && !parsed.terminalCommands.every(isTerminalCommandRecord))
   ) {
     throw new Error("Sync bundle terminal commands are invalid.");
   }
 
   return {
-    version: 1,
+    version: 2,
     exportedAt: parsed.exportedAt,
-    settings: sanitizeHermesSettings(parsed.settings, platform),
+    settings:
+      parsed.version === 1
+        ? sanitizeHermesSettings(parsed.settings, platform)
+        : parsed.settings === null
+          ? null
+          : sanitizeHermesSettings(parsed.settings, platform),
     projects: parsed.projects,
     servers: parsed.servers,
     localSessionPresets: parsed.localSessionPresets,
-    localGitRepositories: parsed.localGitRepositories,
-    terminalCommands: parsed.terminalCommands
+    localGitRepositories:
+      parsed.version === 1
+        ? parsed.localGitRepositories
+        : parsed.localGitRepositories === null
+          ? null
+          : parsed.localGitRepositories,
+    terminalCommands:
+      parsed.version === 1
+        ? parsed.terminalCommands
+        : parsed.terminalCommands === null
+          ? null
+          : parsed.terminalCommands,
+    keychainItems:
+      parsed.version === 2 && Array.isArray(parsed.keychainItems) && parsed.keychainItems.every(isSyncedKeychainItem)
+        ? parsed.keychainItems
+        : null,
+    tmuxMetadata:
+      parsed.version === 2 && Array.isArray(parsed.tmuxMetadata) && parsed.tmuxMetadata.every(isSyncedTmuxMetadataRecord)
+        ? parsed.tmuxMetadata
+        : null,
+    sessionHistory:
+      parsed.version === 2 && Array.isArray(parsed.sessionHistory) && parsed.sessionHistory.every(isSyncedTerminalHistoryRecord)
+        ? parsed.sessionHistory
+        : null
   };
 }
 
@@ -889,6 +1034,54 @@ export function isLocalGitRepository(value: unknown): value is LocalGitRepositor
     typeof value.id === "string" &&
     typeof value.name === "string" &&
     typeof value.path === "string"
+  );
+}
+
+export function isSyncedKeychainItem(value: unknown): value is SyncedKeychainItem {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.name === "string" &&
+    (value.kind === "sshKey" || value.kind === "password" || value.kind === "default") &&
+    typeof value.secret === "string" &&
+    (typeof value.publicKey === "string" || value.publicKey === null)
+  );
+}
+
+export function isSyncedTmuxMetadataRecord(value: unknown): value is SyncedTmuxMetadataRecord {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.serverRef === "string" &&
+    typeof value.serverLabel === "string" &&
+    Array.isArray(value.sessionNames) &&
+    value.sessionNames.every((item: unknown) => typeof item === "string") &&
+    (typeof value.lastAttachedSession === "string" || value.lastAttachedSession === null) &&
+    typeof value.lastSeenAt === "string"
+  );
+}
+
+export function isSyncedTerminalHistoryRecord(value: unknown): value is SyncedTerminalHistoryRecord {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.id === "string" &&
+    (value.targetKind === "local" || value.targetKind === "server") &&
+    (typeof value.serverRef === "string" || value.serverRef === null) &&
+    (typeof value.serverLabel === "string" || value.serverLabel === null) &&
+    typeof value.title === "string" &&
+    (typeof value.cwd === "string" || value.cwd === null) &&
+    (typeof value.tmuxSession === "string" || value.tmuxSession === null) &&
+    typeof value.startedAt === "string" &&
+    typeof value.endedAt === "string" &&
+    (typeof value.exitCode === "number" || value.exitCode === null) &&
+    typeof value.reason === "string"
   );
 }
 
@@ -1023,14 +1216,20 @@ function isRelayWorkspaceDeviceRecord(value: unknown): value is RelayWorkspaceDe
     typeof value.id === "string" &&
     typeof value.name === "string" &&
     typeof value.platform === "string" &&
-    (value.role === "master" || value.role === "member") &&
+    (value.role === "master" || value.role === "member" || value.role === null) &&
+    (value.status === "pending" || value.status === "approved" || value.status === "revoked") &&
     typeof value.linkedAt === "string" &&
+    (typeof value.approvedAt === "string" || value.approvedAt === null) &&
     typeof value.lastSeenAt === "string" &&
-    (typeof value.revokedAt === "string" || value.revokedAt === null)
+    (typeof value.revokedAt === "string" || value.revokedAt === null) &&
+    isRecord(value.publicKeys) &&
+    typeof value.publicKeys.encryptionPublicKey === "string" &&
+    typeof value.publicKeys.signingPublicKey === "string" &&
+    value.publicKeys.encoding === "base64"
   );
 }
 
-function defaultRelayDeviceName(platform: DevicePlatform) {
+export function getDefaultRelayDeviceName(platform: DevicePlatform) {
   return `Hermes ${getDevicePlatformLabel(platform)}`;
 }
 
@@ -1063,7 +1262,7 @@ export function buildRelayCheckCommand(runtime: RelayClientState["installRuntime
   const dockerChecks = [
     "set -e",
     "echo 'Checking Hermes Relay prerequisites...'",
-    "command -v git >/dev/null && git --version || echo 'git missing'",
+    "command -v curl >/dev/null && curl --version | head -n 1 || echo 'curl missing'",
     "command -v docker >/dev/null && docker --version || echo 'docker missing'",
     "command -v tailscale >/dev/null && tailscale status || echo 'tailscale missing'"
   ];
@@ -1071,7 +1270,7 @@ export function buildRelayCheckCommand(runtime: RelayClientState["installRuntime
   const appleChecks = [
     "set -e",
     "echo 'Checking Hermes Relay prerequisites...'",
-    "command -v git >/dev/null && git --version || echo 'git missing'",
+    "command -v curl >/dev/null && curl --version | head -n 1 || echo 'curl missing'",
     "command -v container >/dev/null && container system info || echo 'apple container missing'",
     "command -v tailscale >/dev/null && tailscale status || echo 'tailscale missing'"
   ];
@@ -1083,26 +1282,27 @@ export function buildRelayInstallCommand(input: {
   runtime: RelayClientState["installRuntime"];
   relayPort: number;
 }) {
-  const repoUrl = "https://github.com/qarlus/hermes.git";
   const base = [
     "set -e",
-    "mkdir -p ~/hermes-relay",
-    "if [ ! -d ~/hermes-relay/.git ]; then git clone " + repoUrl + " ~/hermes-relay; fi",
-    "cd ~/hermes-relay",
-    "git fetch --all --tags",
-    "git pull --ff-only"
+    "command -v curl >/dev/null 2>&1 || { echo 'curl is required to install Hermes Relay.'; exit 1; }",
+    'RELAY_REF="${HERMES_RELAY_REF:-master}"',
+    'RELAY_BASE_URL="https://raw.githubusercontent.com/qarlus/hermes/${RELAY_REF}/apps/server"',
+    "mkdir -p ~/hermes-relay-package",
+    "cd ~/hermes-relay-package",
+    'curl -fsSL "$RELAY_BASE_URL/Dockerfile.runtime" -o Dockerfile',
+    'curl -fsSL "$RELAY_BASE_URL/dist/index.js" -o index.js'
   ];
 
   const docker = [
     ...base,
-    "docker build -f apps/server/Dockerfile -t hermes-relay:latest .",
+    "docker build -t hermes-relay:latest .",
     "docker rm -f hermes-relay >/dev/null 2>&1 || true",
     `docker run -d --name hermes-relay --restart unless-stopped -p ${input.relayPort}:8787 -v hermes-relay-data:/data hermes-relay:latest`
   ];
 
   const appleContainer = [
     ...base,
-    "container build -t hermes-relay:latest -f apps/server/Dockerfile .",
+    "container build -t hermes-relay:latest -f Dockerfile .",
     "container rm -f hermes-relay >/dev/null 2>&1 || true",
     `container run --name hermes-relay --detach --publish ${input.relayPort}:8787 hermes-relay:latest`
   ];

@@ -6,6 +6,7 @@ type AppHeaderProps = {
   eyebrow?: string;
   title: string;
   subtitle: string;
+  compact?: boolean;
   meta?: string[];
   search: string;
   onSearchChange: (value: string) => void;
@@ -22,6 +23,7 @@ export function AppHeader({
   eyebrow,
   title,
   subtitle,
+  compact = false,
   meta = [],
   search,
   onSearchChange,
@@ -33,7 +35,7 @@ export function AppHeader({
   backLabel = "Back"
 }: AppHeaderProps) {
   return (
-    <header className="main-panel__header">
+    <header className={`main-panel__header ${compact ? "main-panel__header--compact" : ""}`}>
       <div className="main-panel__heading">
         <p className="eyebrow">
           {eyebrow ??

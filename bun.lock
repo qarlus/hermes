@@ -60,6 +60,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@hermes/core": "workspace:*",
+        "@hermes/sync": "workspace:*",
         "@tauri-apps/api": "^2.2.0",
       },
     },

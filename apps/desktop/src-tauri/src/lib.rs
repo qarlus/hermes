@@ -14,7 +14,10 @@ use aes_gcm_siv::{
     Aes256GcmSiv, Nonce,
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use chrono::{TimeZone, Utc};
+use ed25519_dalek::{Signature as Ed25519Signature, Signer, SigningKey as Ed25519SigningKey, Verifier, VerifyingKey as Ed25519VerifyingKey};
+use hkdf::Hkdf;
 use keyring::{Entry, Error as KeyringError};
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use rand::{rngs::OsRng, RngCore};
@@ -25,14 +28,19 @@ use reqwest::{
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager, State};
 use uuid::Uuid;
+use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519SecretKey};
 
 const AUTH_DEFAULT: &str = "default";
 const AUTH_SSH_KEY: &str = "sshKey";
 const AUTH_PASSWORD: &str = "password";
 const KEYCHAIN_SERVICE: &str = "Hermes";
 const GITHUB_KEYRING_ACCOUNT: &str = "github-device-token";
+const RELAY_IDENTITY_KEY_PREFIX: &str = "relay-device-identity";
+const RELAY_WORKSPACE_KEY_PREFIX: &str = "relay-workspace-key";
+const INLINE_SSH_KEY_PREFIX: &str = "hermes-inline-ssh-key:";
 const GITHUB_TOKEN_SETTING_KEY: &str = "github.token";
 const GITHUB_API_VERSION: &str = "2022-11-28";
 const GITHUB_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
@@ -110,6 +118,15 @@ struct CreateKeychainItemInput {
     secret: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SyncableKeychainItemRecord {
+    name: String,
+    kind: String,
+    secret: String,
+    public_key: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateLocalSshKeyInput {
@@ -176,6 +193,78 @@ struct RelayHostInspectionRecord {
     relay_id: Option<String>,
     suggested_relay_urls: Vec<String>,
     suggested_relay_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RelayDevicePublicKeysRecord {
+    encryption_public_key: String,
+    signing_public_key: String,
+    encoding: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RelayWorkspaceKeyWrapRecord {
+    version: u8,
+    algorithm: String,
+    recipient_device_id: String,
+    wrapped_by_device_id: String,
+    ephemeral_public_key: String,
+    salt: String,
+    nonce: String,
+    ciphertext: String,
+    encoding: String,
+    created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RelayEncryptedEventEnvelopeRecord {
+    version: u8,
+    workspace_id: String,
+    event_id: String,
+    author_device_id: String,
+    sequence: u64,
+    ciphertext: String,
+    nonce: String,
+    aad: String,
+    signature: String,
+    encoding: String,
+    created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RelayEncryptedSnapshotEnvelopeRecord {
+    version: u8,
+    workspace_id: String,
+    snapshot_id: String,
+    author_device_id: String,
+    base_sequence: u64,
+    ciphertext: String,
+    nonce: String,
+    aad: String,
+    signature: String,
+    encoding: String,
+    created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RelayDeviceIdentityRecord {
+    device_id: String,
+    public_keys: RelayDevicePublicKeysRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredRelayDeviceIdentityRecord {
+    device_id: String,
+    encryption_private_key: String,
+    encryption_public_key: String,
+    signing_private_key: String,
+    signing_public_key: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1015,18 +1104,113 @@ impl Database {
             return Err("Only SSH key credentials have a public key.".to_string());
         }
 
-        let private_key_path = expand_home_path(&self.read_secret(id)?);
+        let secret = self.read_secret(id)?;
+        let private_key_path = materialize_ssh_key_secret(&secret)?;
         let public_key_path = PathBuf::from(format!("{}.pub", private_key_path.display()));
-        if !public_key_path.exists() {
-            return Err(format!(
-                "Public key file was not found at {}.",
-                public_key_path.display()
-            ));
+        if public_key_path.exists() {
+            return fs::read_to_string(&public_key_path)
+                .map(|value| value.trim().to_string())
+                .map_err(|error| error.to_string());
         }
 
-        fs::read_to_string(&public_key_path)
-            .map(|value| value.trim().to_string())
-            .map_err(|error| error.to_string())
+        ssh_public_key_from_private_key(&private_key_path)
+    }
+
+    fn list_syncable_keychain_items(&self) -> Result<Vec<SyncableKeychainItemRecord>, String> {
+        let items = self.list_keychain_items()?;
+        let mut synced = Vec::new();
+
+        for item in items {
+            let secret = self.read_secret(&item.id)?;
+            if item.kind == AUTH_SSH_KEY {
+                let private_key_contents = read_ssh_private_key_secret(&secret)?;
+                let public_key = self.get_keychain_public_key(&item.id).ok();
+                synced.push(SyncableKeychainItemRecord {
+                    name: item.name,
+                    kind: item.kind,
+                    secret: private_key_contents,
+                    public_key: public_key.filter(|value| !value.trim().is_empty()),
+                });
+            } else if item.kind == AUTH_PASSWORD {
+                synced.push(SyncableKeychainItemRecord {
+                    name: item.name,
+                    kind: item.kind,
+                    secret,
+                    public_key: None,
+                });
+            }
+        }
+
+        Ok(synced)
+    }
+
+    fn upsert_syncable_keychain_items(
+        &self,
+        items: Vec<SyncableKeychainItemRecord>,
+    ) -> Result<Vec<KeychainItemRecord>, String> {
+        let mut saved = Vec::new();
+        let connection = self.connection.lock().map_err(lock_error)?;
+
+        for item in items {
+            let kind = normalized_auth_kind(&item.kind)?.to_string();
+            let name = item.name.trim();
+            if name.is_empty() {
+                continue;
+            }
+
+            let existing_id: Option<String> = connection
+                .query_row(
+                    "SELECT id FROM credentials WHERE name = ?1 AND kind = ?2 ORDER BY updated_at DESC LIMIT 1",
+                    params![name, kind],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|error| error.to_string())?;
+            let credential_id = existing_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+            let now = Utc::now().to_rfc3339();
+
+            let stored_secret = if kind == AUTH_SSH_KEY {
+                encode_inline_ssh_key_secret(&item.secret)
+            } else {
+                item.secret.trim().to_string()
+            };
+            if stored_secret.is_empty() {
+                continue;
+            }
+
+            let exists = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM credentials WHERE id = ?1",
+                    [credential_id.clone()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|error| error.to_string())?
+                > 0;
+
+            if exists {
+                connection
+                    .execute(
+                        "UPDATE credentials SET name = ?2, kind = ?3, updated_at = ?4 WHERE id = ?1",
+                        params![credential_id, name, kind, now],
+                    )
+                    .map_err(|error| error.to_string())?;
+            } else {
+                connection
+                    .execute(
+                        r#"
+                        INSERT INTO credentials (id, name, kind, created_at, updated_at)
+                        VALUES (?1, ?2, ?3, ?4, ?5)
+                        "#,
+                        params![credential_id, name, kind, now, now],
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+
+            self.store_secret_with_connection(&connection, &credential_id, &stored_secret)?;
+            saved.push(self.get_keychain_item(&credential_id)?);
+        }
+
+        Ok(saved)
     }
 
     fn update_keychain_item_name(
@@ -1829,6 +2013,13 @@ fn list_keychain_items(state: State<'_, AppState>) -> Result<Vec<KeychainItemRec
 }
 
 #[tauri::command]
+fn list_syncable_keychain_items(
+    state: State<'_, AppState>,
+) -> Result<Vec<SyncableKeychainItemRecord>, String> {
+    state.db.list_syncable_keychain_items()
+}
+
+#[tauri::command]
 fn create_keychain_item(
     state: State<'_, AppState>,
     input: CreateKeychainItemInput,
@@ -1842,10 +2033,343 @@ fn get_keychain_public_key(state: State<'_, AppState>, id: String) -> Result<Str
 }
 
 #[tauri::command]
+fn upsert_syncable_keychain_items(
+    state: State<'_, AppState>,
+    items: Vec<SyncableKeychainItemRecord>,
+) -> Result<Vec<KeychainItemRecord>, String> {
+    state.db.upsert_syncable_keychain_items(items)
+}
+
+#[tauri::command]
 fn get_default_ssh_directory() -> Result<Option<String>, String> {
     Ok(default_ssh_directory()
         .filter(|path| path.exists())
         .map(|path| path.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+fn get_local_account_name() -> Result<Option<String>, String> {
+    Ok(std::env::var("USERNAME")
+        .ok()
+        .or_else(|| std::env::var("USER").ok())
+        .or_else(|| std::env::var("LOGNAME").ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty()))
+}
+
+#[tauri::command]
+fn get_or_create_relay_device_identity(device_id: String) -> Result<RelayDeviceIdentityRecord, String> {
+    let identity = load_or_create_relay_device_identity(&device_id)?;
+    Ok(RelayDeviceIdentityRecord {
+        device_id: identity.device_id,
+        public_keys: RelayDevicePublicKeysRecord {
+            encryption_public_key: identity.encryption_public_key,
+            signing_public_key: identity.signing_public_key,
+            encoding: "base64".to_string(),
+        },
+    })
+}
+
+#[tauri::command]
+fn wrap_relay_workspace_key_for_device(
+    workspace_id: String,
+    wrapped_by_device_id: String,
+    recipient_device_id: String,
+    recipient_public_key: String,
+) -> Result<RelayWorkspaceKeyWrapRecord, String> {
+    let _identity = load_or_create_relay_device_identity(&wrapped_by_device_id)?;
+    let workspace_key = load_or_create_relay_workspace_key(&workspace_id)?;
+    let recipient_public_bytes =
+        decode_fixed_base64::<32>(&recipient_public_key, "Relay recipient public key is invalid.")?;
+    let recipient_public = X25519PublicKey::from(recipient_public_bytes);
+
+    let ephemeral_secret = X25519SecretKey::random_from_rng(OsRng);
+    let ephemeral_public = X25519PublicKey::from(&ephemeral_secret);
+    let shared_secret = ephemeral_secret.diffie_hellman(&recipient_public);
+
+    let mut salt = [0_u8; 32];
+    OsRng.fill_bytes(&mut salt);
+
+    let hkdf = Hkdf::<Sha256>::new(Some(&salt), shared_secret.as_bytes());
+    let mut aead_key = [0_u8; 32];
+    hkdf.expand(
+        b"hermes-relay-workspace-key-wrap/v1",
+        &mut aead_key,
+    )
+    .map_err(|_| "Failed to derive relay workspace wrapping key.".to_string())?;
+
+    let cipher =
+        XChaCha20Poly1305::new_from_slice(&aead_key).map_err(|error| error.to_string())?;
+    let mut nonce = [0_u8; 24];
+    OsRng.fill_bytes(&mut nonce);
+    let aad = relay_workspace_wrap_aad(&workspace_id, &recipient_device_id, &wrapped_by_device_id);
+    let ciphertext = cipher
+        .encrypt(
+            XNonce::from_slice(&nonce),
+            chacha20poly1305::aead::Payload {
+                msg: &workspace_key,
+                aad: aad.as_bytes(),
+            },
+        )
+        .map_err(|_| "Failed to wrap relay workspace key.".to_string())?;
+
+    Ok(RelayWorkspaceKeyWrapRecord {
+        version: 1,
+        algorithm: "x25519-hkdf-sha256-xchacha20poly1305".to_string(),
+        recipient_device_id,
+        wrapped_by_device_id,
+        ephemeral_public_key: STANDARD.encode(ephemeral_public.as_bytes()),
+        salt: STANDARD.encode(salt),
+        nonce: STANDARD.encode(nonce),
+        ciphertext: STANDARD.encode(ciphertext),
+        encoding: "base64".to_string(),
+        created_at: Utc::now().to_rfc3339(),
+    })
+}
+
+#[tauri::command]
+fn unwrap_relay_workspace_key(
+    workspace_id: String,
+    device_id: String,
+    wrap: RelayWorkspaceKeyWrapRecord,
+) -> Result<bool, String> {
+    let identity = load_or_create_relay_device_identity(&device_id)?;
+
+    if wrap.recipient_device_id != device_id {
+        return Err("Wrapped workspace key does not belong to this device.".to_string());
+    }
+
+    let private_key = decode_fixed_base64::<32>(
+        &identity.encryption_private_key,
+        "Local relay encryption key is invalid.",
+    )?;
+    let ephemeral_public_bytes = decode_fixed_base64::<32>(
+        &wrap.ephemeral_public_key,
+        "Relay workspace wrap public key is invalid.",
+    )?;
+    let salt = decode_fixed_base64::<32>(&wrap.salt, "Relay workspace wrap salt is invalid.")?;
+    let nonce = decode_fixed_base64::<24>(&wrap.nonce, "Relay workspace wrap nonce is invalid.")?;
+    let ciphertext = STANDARD
+        .decode(&wrap.ciphertext)
+        .map_err(|error| error.to_string())?;
+
+    let secret = X25519SecretKey::from(private_key);
+    let ephemeral_public = X25519PublicKey::from(ephemeral_public_bytes);
+    let shared_secret = secret.diffie_hellman(&ephemeral_public);
+
+    let hkdf = Hkdf::<Sha256>::new(Some(&salt), shared_secret.as_bytes());
+    let mut aead_key = [0_u8; 32];
+    hkdf.expand(
+        b"hermes-relay-workspace-key-wrap/v1",
+        &mut aead_key,
+    )
+    .map_err(|_| "Failed to derive relay workspace unwrapping key.".to_string())?;
+
+    let cipher =
+        XChaCha20Poly1305::new_from_slice(&aead_key).map_err(|error| error.to_string())?;
+    let aad = relay_workspace_wrap_aad(
+        &workspace_id,
+        &wrap.recipient_device_id,
+        &wrap.wrapped_by_device_id,
+    );
+    let plaintext = cipher
+        .decrypt(
+            XNonce::from_slice(&nonce),
+            chacha20poly1305::aead::Payload {
+                msg: ciphertext.as_ref(),
+                aad: aad.as_bytes(),
+            },
+        )
+        .map_err(|_| "Failed to decrypt relay workspace key.".to_string())?;
+
+    if plaintext.len() != 32 {
+        return Err("Relay workspace key payload is invalid.".to_string());
+    }
+
+    store_relay_workspace_key(&workspace_id, &STANDARD.encode(plaintext))?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn rotate_relay_workspace_key(workspace_id: String) -> Result<bool, String> {
+    if workspace_id.trim().is_empty() {
+        return Err("Relay workspace id is required.".to_string());
+    }
+
+    let mut workspace_key = [0_u8; 32];
+    OsRng.fill_bytes(&mut workspace_key);
+    store_relay_workspace_key(&workspace_id, &STANDARD.encode(workspace_key))?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn create_relay_encrypted_event(
+    workspace_id: String,
+    device_id: String,
+    event_id: String,
+    sequence: u64,
+    payload_json: String,
+) -> Result<RelayEncryptedEventEnvelopeRecord, String> {
+    let identity = load_or_create_relay_device_identity(&device_id)?;
+    let signing_key = load_relay_signing_key(&identity)?;
+    let workspace_key = load_or_create_relay_workspace_key(&workspace_id)?;
+    let created_at = Utc::now().to_rfc3339();
+    let aad = relay_event_aad(&workspace_id, &event_id, &device_id, sequence, &created_at);
+    let (ciphertext, nonce) = encrypt_relay_payload(&workspace_key, payload_json.as_bytes(), &aad)?;
+    let signature_payload = relay_event_signature_payload(
+        &workspace_id,
+        &event_id,
+        &device_id,
+        sequence,
+        &ciphertext,
+        &nonce,
+        &aad,
+        &created_at,
+    );
+    let signature = signing_key.sign(signature_payload.as_bytes());
+
+    Ok(RelayEncryptedEventEnvelopeRecord {
+        version: 1,
+        workspace_id,
+        event_id,
+        author_device_id: device_id,
+        sequence,
+        ciphertext,
+        nonce,
+        aad,
+        signature: STANDARD.encode(signature.to_bytes()),
+        encoding: "base64".to_string(),
+        created_at,
+    })
+}
+
+#[tauri::command]
+fn create_relay_encrypted_snapshot(
+    workspace_id: String,
+    device_id: String,
+    snapshot_id: String,
+    base_sequence: u64,
+    payload_json: String,
+) -> Result<RelayEncryptedSnapshotEnvelopeRecord, String> {
+    let identity = load_or_create_relay_device_identity(&device_id)?;
+    let signing_key = load_relay_signing_key(&identity)?;
+    let workspace_key = load_or_create_relay_workspace_key(&workspace_id)?;
+    let created_at = Utc::now().to_rfc3339();
+    let aad = relay_snapshot_aad(
+        &workspace_id,
+        &snapshot_id,
+        &device_id,
+        base_sequence,
+        &created_at,
+    );
+    let (ciphertext, nonce) = encrypt_relay_payload(&workspace_key, payload_json.as_bytes(), &aad)?;
+    let signature_payload = relay_snapshot_signature_payload(
+        &workspace_id,
+        &snapshot_id,
+        &device_id,
+        base_sequence,
+        &ciphertext,
+        &nonce,
+        &aad,
+        &created_at,
+    );
+    let signature = signing_key.sign(signature_payload.as_bytes());
+
+    Ok(RelayEncryptedSnapshotEnvelopeRecord {
+        version: 1,
+        workspace_id,
+        snapshot_id,
+        author_device_id: device_id,
+        base_sequence,
+        ciphertext,
+        nonce,
+        aad,
+        signature: STANDARD.encode(signature.to_bytes()),
+        encoding: "base64".to_string(),
+        created_at,
+    })
+}
+
+#[tauri::command]
+fn decrypt_relay_encrypted_event(
+    workspace_id: String,
+    device_id: String,
+    author_signing_public_key: String,
+    event: RelayEncryptedEventEnvelopeRecord,
+) -> Result<String, String> {
+    if event.workspace_id != workspace_id {
+        return Err("Relay event workspace does not match the current workspace.".to_string());
+    }
+
+    let _identity = load_or_create_relay_device_identity(&device_id)?;
+    let verifying_key = load_relay_verifying_key(&author_signing_public_key)?;
+    let signature_payload = relay_event_signature_payload(
+        &event.workspace_id,
+        &event.event_id,
+        &event.author_device_id,
+        event.sequence,
+        &event.ciphertext,
+        &event.nonce,
+        &event.aad,
+        &event.created_at,
+    );
+    let signature_bytes =
+        decode_fixed_base64::<64>(&event.signature, "Relay event signature is invalid.")?;
+    let signature = Ed25519Signature::from_bytes(&signature_bytes);
+    verifying_key
+        .verify(signature_payload.as_bytes(), &signature)
+        .map_err(|_| "Relay event signature verification failed.".to_string())?;
+
+    let workspace_key = load_or_create_relay_workspace_key(&workspace_id)?;
+    let plaintext = decrypt_relay_payload(
+        &workspace_key,
+        &event.ciphertext,
+        &event.nonce,
+        &event.aad,
+    )?;
+    String::from_utf8(plaintext).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn decrypt_relay_encrypted_snapshot(
+    workspace_id: String,
+    device_id: String,
+    author_signing_public_key: String,
+    snapshot: RelayEncryptedSnapshotEnvelopeRecord,
+) -> Result<String, String> {
+    if snapshot.workspace_id != workspace_id {
+        return Err("Relay snapshot workspace does not match the current workspace.".to_string());
+    }
+
+    let _identity = load_or_create_relay_device_identity(&device_id)?;
+    let verifying_key = load_relay_verifying_key(&author_signing_public_key)?;
+    let signature_payload = relay_snapshot_signature_payload(
+        &snapshot.workspace_id,
+        &snapshot.snapshot_id,
+        &snapshot.author_device_id,
+        snapshot.base_sequence,
+        &snapshot.ciphertext,
+        &snapshot.nonce,
+        &snapshot.aad,
+        &snapshot.created_at,
+    );
+    let signature_bytes = decode_fixed_base64::<64>(
+        &snapshot.signature,
+        "Relay snapshot signature is invalid.",
+    )?;
+    let signature = Ed25519Signature::from_bytes(&signature_bytes);
+    verifying_key
+        .verify(signature_payload.as_bytes(), &signature)
+        .map_err(|_| "Relay snapshot signature verification failed.".to_string())?;
+
+    let workspace_key = load_or_create_relay_workspace_key(&workspace_id)?;
+    let plaintext = decrypt_relay_payload(
+        &workspace_key,
+        &snapshot.ciphertext,
+        &snapshot.nonce,
+        &snapshot.aad,
+    )?;
+    String::from_utf8(plaintext).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3596,8 +4120,8 @@ fn scp_command(database: &Database, server: &ServerRecord) -> Result<Command, St
     match server.auth_kind.as_str() {
         AUTH_SSH_KEY => {
             let secret =
-                auth_secret.ok_or_else(|| "Stored SSH key path was not found.".to_string())?;
-            let expanded = expand_home_path(&secret);
+                auth_secret.ok_or_else(|| "Stored SSH key was not found.".to_string())?;
+            let expanded = materialize_ssh_key_secret(&secret)?;
             if !expanded.exists() {
                 return Err(format!(
                     "SSH key path was not found: {}",
@@ -3797,9 +4321,20 @@ pub fn run() {
             update_server,
             delete_server,
             list_keychain_items,
+            list_syncable_keychain_items,
             create_keychain_item,
             get_keychain_public_key,
+            upsert_syncable_keychain_items,
             get_default_ssh_directory,
+            get_local_account_name,
+            get_or_create_relay_device_identity,
+            wrap_relay_workspace_key_for_device,
+            unwrap_relay_workspace_key,
+            rotate_relay_workspace_key,
+            create_relay_encrypted_event,
+            create_relay_encrypted_snapshot,
+            decrypt_relay_encrypted_event,
+            decrypt_relay_encrypted_snapshot,
             create_local_ssh_key,
             update_keychain_item_name,
             delete_keychain_item,
@@ -5261,6 +5796,218 @@ fn github_keyring_entry() -> Result<Entry, String> {
     Entry::new(KEYCHAIN_SERVICE, GITHUB_KEYRING_ACCOUNT).map_err(|error| error.to_string())
 }
 
+fn relay_identity_keyring_entry(device_id: &str) -> Result<Entry, String> {
+    keychain_entry(
+        KEYCHAIN_SERVICE,
+        &format!("{RELAY_IDENTITY_KEY_PREFIX}:{device_id}"),
+    )
+}
+
+fn relay_workspace_key_keyring_entry(workspace_id: &str) -> Result<Entry, String> {
+    keychain_entry(
+        KEYCHAIN_SERVICE,
+        &format!("{RELAY_WORKSPACE_KEY_PREFIX}:{workspace_id}"),
+    )
+}
+
+fn load_or_create_relay_device_identity(
+    device_id: &str,
+) -> Result<StoredRelayDeviceIdentityRecord, String> {
+    if device_id.trim().is_empty() {
+        return Err("Relay device id is required.".to_string());
+    }
+
+    let entry = relay_identity_keyring_entry(device_id)?;
+    match entry.get_password() {
+        Ok(secret) => serde_json::from_str::<StoredRelayDeviceIdentityRecord>(&secret)
+            .map_err(|error| error.to_string()),
+        Err(KeyringError::NoEntry) => {
+            let encryption_private = X25519SecretKey::random_from_rng(OsRng);
+            let encryption_public = X25519PublicKey::from(&encryption_private);
+            let signing_private = Ed25519SigningKey::generate(&mut OsRng);
+            let signing_public = signing_private.verifying_key();
+
+            let identity = StoredRelayDeviceIdentityRecord {
+                device_id: device_id.to_string(),
+                encryption_private_key: STANDARD.encode(encryption_private.to_bytes()),
+                encryption_public_key: STANDARD.encode(encryption_public.as_bytes()),
+                signing_private_key: STANDARD.encode(signing_private.to_keypair_bytes()),
+                signing_public_key: STANDARD.encode(signing_public.to_bytes()),
+            };
+
+            entry
+                .set_password(
+                    &serde_json::to_string(&identity).map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+
+            Ok(identity)
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn load_relay_signing_key(
+    identity: &StoredRelayDeviceIdentityRecord,
+) -> Result<Ed25519SigningKey, String> {
+    let signing_key_bytes = decode_fixed_base64::<64>(
+        &identity.signing_private_key,
+        "Local relay signing key is invalid.",
+    )?;
+    Ok(Ed25519SigningKey::from_keypair_bytes(&signing_key_bytes)
+        .map_err(|error| error.to_string())?)
+}
+
+fn load_relay_verifying_key(public_key: &str) -> Result<Ed25519VerifyingKey, String> {
+    let public_key_bytes =
+        decode_fixed_base64::<32>(public_key, "Relay signing public key is invalid.")?;
+    Ed25519VerifyingKey::from_bytes(&public_key_bytes).map_err(|error| error.to_string())
+}
+
+fn load_or_create_relay_workspace_key(workspace_id: &str) -> Result<[u8; 32], String> {
+    if workspace_id.trim().is_empty() {
+        return Err("Relay workspace id is required.".to_string());
+    }
+
+    let entry = relay_workspace_key_keyring_entry(workspace_id)?;
+    match entry.get_password() {
+        Ok(secret) => decode_fixed_base64::<32>(&secret, "Local relay workspace key is invalid."),
+        Err(KeyringError::NoEntry) => {
+            let mut workspace_key = [0_u8; 32];
+            OsRng.fill_bytes(&mut workspace_key);
+            store_relay_workspace_key(workspace_id, &STANDARD.encode(workspace_key))?;
+            Ok(workspace_key)
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn store_relay_workspace_key(workspace_id: &str, encoded_key: &str) -> Result<(), String> {
+    let entry = relay_workspace_key_keyring_entry(workspace_id)?;
+    entry
+        .set_password(encoded_key)
+        .map_err(|error| error.to_string())
+}
+
+fn decode_fixed_base64<const N: usize>(value: &str, error_message: &str) -> Result<[u8; N], String> {
+    let bytes = STANDARD
+        .decode(value)
+        .map_err(|_| error_message.to_string())?;
+    bytes
+        .try_into()
+        .map_err(|_| error_message.to_string())
+}
+
+fn relay_workspace_wrap_aad(
+    workspace_id: &str,
+    recipient_device_id: &str,
+    wrapped_by_device_id: &str,
+) -> String {
+    format!(
+        "hermes-relay-workspace-key-wrap/v1:{workspace_id}:{recipient_device_id}:{wrapped_by_device_id}"
+    )
+}
+
+fn relay_event_aad(
+    workspace_id: &str,
+    event_id: &str,
+    author_device_id: &str,
+    sequence: u64,
+    created_at: &str,
+) -> String {
+    format!(
+        "hermes-relay-event/v1:{workspace_id}:{event_id}:{author_device_id}:{sequence}:{created_at}"
+    )
+}
+
+fn relay_snapshot_aad(
+    workspace_id: &str,
+    snapshot_id: &str,
+    author_device_id: &str,
+    base_sequence: u64,
+    created_at: &str,
+) -> String {
+    format!(
+        "hermes-relay-snapshot/v1:{workspace_id}:{snapshot_id}:{author_device_id}:{base_sequence}:{created_at}"
+    )
+}
+
+fn relay_event_signature_payload(
+    workspace_id: &str,
+    event_id: &str,
+    author_device_id: &str,
+    sequence: u64,
+    ciphertext: &str,
+    nonce: &str,
+    aad: &str,
+    created_at: &str,
+) -> String {
+    format!(
+        "relay-event|1|{workspace_id}|{event_id}|{author_device_id}|{sequence}|{ciphertext}|{nonce}|{aad}|{created_at}"
+    )
+}
+
+fn relay_snapshot_signature_payload(
+    workspace_id: &str,
+    snapshot_id: &str,
+    author_device_id: &str,
+    base_sequence: u64,
+    ciphertext: &str,
+    nonce: &str,
+    aad: &str,
+    created_at: &str,
+) -> String {
+    format!(
+        "relay-snapshot|1|{workspace_id}|{snapshot_id}|{author_device_id}|{base_sequence}|{ciphertext}|{nonce}|{aad}|{created_at}"
+    )
+}
+
+fn encrypt_relay_payload(
+    workspace_key: &[u8; 32],
+    plaintext: &[u8],
+    aad: &str,
+) -> Result<(String, String), String> {
+    let cipher = XChaCha20Poly1305::new_from_slice(workspace_key)
+        .map_err(|error| error.to_string())?;
+    let mut nonce = [0_u8; 24];
+    OsRng.fill_bytes(&mut nonce);
+    let ciphertext = cipher
+        .encrypt(
+            XNonce::from_slice(&nonce),
+            chacha20poly1305::aead::Payload {
+                msg: plaintext,
+                aad: aad.as_bytes(),
+            },
+        )
+        .map_err(|_| "Failed to encrypt relay payload.".to_string())?;
+
+    Ok((STANDARD.encode(ciphertext), STANDARD.encode(nonce)))
+}
+
+fn decrypt_relay_payload(
+    workspace_key: &[u8; 32],
+    ciphertext: &str,
+    nonce: &str,
+    aad: &str,
+) -> Result<Vec<u8>, String> {
+    let cipher = XChaCha20Poly1305::new_from_slice(workspace_key)
+        .map_err(|error| error.to_string())?;
+    let nonce_bytes = decode_fixed_base64::<24>(nonce, "Relay payload nonce is invalid.")?;
+    let ciphertext_bytes = STANDARD
+        .decode(ciphertext)
+        .map_err(|_| "Relay payload ciphertext is invalid.".to_string())?;
+
+    cipher
+        .decrypt(
+            XNonce::from_slice(&nonce_bytes),
+            chacha20poly1305::aead::Payload {
+                msg: ciphertext_bytes.as_ref(),
+                aad: aad.as_bytes(),
+            },
+        )
+        .map_err(|_| "Failed to decrypt relay payload.".to_string())
+}
+
 fn github_session_from_token(token: &str) -> Result<GitHubAuthSession, String> {
     let client = github_http_client()?;
     let response = client
@@ -5866,6 +6613,73 @@ fn ssh_command_output(
     command.output().map_err(|error| error.to_string())
 }
 
+fn read_ssh_private_key_secret(secret: &str) -> Result<String, String> {
+    if let Some(encoded) = secret.strip_prefix(INLINE_SSH_KEY_PREFIX) {
+        let decoded = STANDARD
+            .decode(encoded)
+            .map_err(|_| "Stored inline SSH key is invalid.".to_string())?;
+        return String::from_utf8(decoded).map_err(|error| error.to_string());
+    }
+
+    let path = expand_home_path(secret);
+    fs::read_to_string(&path)
+        .map_err(|error| format!("Failed to read SSH key at {}: {}", path.display(), error))
+}
+
+fn encode_inline_ssh_key_secret(private_key: &str) -> String {
+    format!(
+        "{}{}",
+        INLINE_SSH_KEY_PREFIX,
+        STANDARD.encode(private_key.trim().as_bytes())
+    )
+}
+
+fn materialize_ssh_key_secret(secret: &str) -> Result<PathBuf, String> {
+    if !secret.starts_with(INLINE_SSH_KEY_PREFIX) {
+        return Ok(expand_home_path(secret));
+    }
+
+    let private_key = read_ssh_private_key_secret(secret)?;
+    let digest = Sha256::digest(private_key.as_bytes());
+    let file_name = format!(
+        "synced-{}.key",
+        digest
+            .iter()
+            .map(|byte| format!("{:02x}", byte))
+            .collect::<String>()
+    );
+    let directory = std::env::temp_dir().join("hermes").join("ssh");
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let path = directory.join(file_name);
+    if !path.exists() {
+        fs::write(&path, private_key).map_err(|error| error.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(path)
+}
+
+fn ssh_public_key_from_private_key(private_key_path: &Path) -> Result<String, String> {
+    let output = Command::new(resolved_program("ssh-keygen"))
+        .args(["-y", "-f", &private_key_path.to_string_lossy()])
+        .current_dir(neutral_command_cwd())
+        .output()
+        .map_err(|error| error.to_string())?;
+
+    if !output.status.success() {
+        return Err(command_error_message(
+            &output,
+            "Failed to derive the SSH public key.",
+        ));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 fn apply_connect_auth(
     command: &mut CommandBuilder,
     server: &ServerRecord,
@@ -5879,8 +6693,8 @@ fn apply_connect_auth(
     match server.auth_kind.as_str() {
         AUTH_SSH_KEY => {
             let secret =
-                auth_secret.ok_or_else(|| "Stored SSH key path was not found.".to_string())?;
-            let expanded = expand_home_path(secret);
+                auth_secret.ok_or_else(|| "Stored SSH key was not found.".to_string())?;
+            let expanded = materialize_ssh_key_secret(secret)?;
             if !expanded.exists() {
                 return Err(format!(
                     "SSH key path was not found: {}",
@@ -5917,8 +6731,8 @@ fn apply_shell_auth(
     match server.auth_kind.as_str() {
         AUTH_SSH_KEY => {
             let secret =
-                auth_secret.ok_or_else(|| "Stored SSH key path was not found.".to_string())?;
-            let expanded = expand_home_path(secret);
+                auth_secret.ok_or_else(|| "Stored SSH key was not found.".to_string())?;
+            let expanded = materialize_ssh_key_secret(secret)?;
             if !expanded.exists() {
                 return Err(format!(
                     "SSH key path was not found: {}",

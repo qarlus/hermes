@@ -1,5 +1,7 @@
 node_modules
 dist
+!apps/server/dist/
+!apps/server/dist/index.js
 target
 coverage
 .DS_Store

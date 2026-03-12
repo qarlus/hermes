@@ -44,6 +44,9 @@ import {
   commitGitRepository,
   connectSession,
   connectLocalSession,
+  createRelayEncryptedEvent,
+  createRelayEncryptedSnapshot,
+  decryptRelayEncryptedEvent,
   checkoutGitBranch,
   createTerminalCommand,
   createGitBranch,
@@ -51,6 +54,7 @@ import {
   createKeychainItem,
   createProject,
   createServer,
+  decryptRelayEncryptedSnapshot,
   deleteTerminalCommand,
   deleteKeychainItem,
   deleteProject,
@@ -59,6 +63,8 @@ import {
   getGitHubSession,
   isGitHubDeviceFlowAvailable,
   getDefaultSshDirectory,
+  getLocalAccountName,
+  getOrCreateRelayDeviceIdentity,
   getCliToolUpdate,
   getKeychainPublicKey,
   inspectRelayHost,
@@ -67,6 +73,7 @@ import {
   listKeychainItems,
   listInstalledCliTools,
   listProjects,
+  listSyncableKeychainItems,
   listTerminalCommands,
   listSessionStatuses,
   listServers,
@@ -74,13 +81,17 @@ import {
   pollGitHubDeviceFlow,
   pushGitRepository,
   resizeSession,
+  rotateRelayWorkspaceKey,
   runCliToolUpdate,
   searchGitHubRepositories,
   signInGitHubWithToken,
   startGitHubDeviceFlow,
+  unwrapRelayWorkspaceKey,
+  upsertSyncableKeychainItems,
   updateKeychainItemName,
   updateProject,
   updateServer,
+  wrapRelayWorkspaceKeyForDevice,
   writeSession
 } from "@hermes/db";
 import type { RelayWorkspaceSession } from "@hermes/sync";
@@ -108,9 +119,12 @@ import {
   buildHermesSyncBundle,
   detectDevicePlatform,
   getHermesTheme,
+  getDefaultRelayDeviceName,
   getTerminalLaunchProfiles,
   isLocalGitRepository,
   isLocalSessionPreset,
+  isSyncedTerminalHistoryRecord,
+  isSyncedTmuxMetadataRecord,
   loadHermesSettings,
   loadRelayClientState,
   parseHermesSyncBundle,
@@ -119,14 +133,23 @@ import {
   resolveLocalTerminalLaunch,
   sanitizeRelayClientState,
   sanitizeHermesSettings,
+  type SyncedKeychainItem,
+  type SyncedTerminalHistoryRecord,
+  type SyncedTmuxMetadataRecord,
+  type HermesSyncBundle,
   type HermesSettings,
   type LocalGitRepository,
   type LocalSessionPreset,
   type RelayClientState
 } from "./lib/settings";
 import {
+  approveRelayDevice,
   connectRelayWorkspace,
+  getRelayEvents,
+  getRelayLatestSnapshot,
   getRelayHealth,
+  postRelayEvents,
+  postRelaySnapshot,
   normalizeRelayUrl,
   revokeRelayDevice
 } from "./lib/relay";
@@ -136,9 +159,12 @@ import { useBufferedTerminalInput } from "./lib/useBufferedTerminalInput";
 const LOCAL_SESSION_PRESETS_KEY = "hermes.localSessionPresets";
 const LOCAL_GIT_REPOSITORIES_KEY = "hermes.localGitRepositories";
 const LOCAL_TERMINAL_COMMANDS_KEY = "hermes.terminalCommands";
+const LOCAL_TMUX_METADATA_KEY = "hermes.tmuxMetadata";
+const LOCAL_TERMINAL_HISTORY_KEY = "hermes.terminalHistory";
 const GITHUB_OWNED_REPOSITORIES_CACHE_KEY = "hermes.githubOwnedRepositories";
 const GITHUB_OWNED_REPOSITORIES_CACHE_TTL_MS = 5 * 60 * 1000;
 const TOAST_DURATION_MS = 2800;
+const MAX_SYNCED_HISTORY_RECORDS = 250;
 const EMPTY_GIT_TOOLBAR_CONTEXT: GitToolbarContext = {
   cloneUrl: null,
   shellRepositoryId: null,
@@ -170,6 +196,38 @@ type ToastRecord = {
   id: string;
   message: string;
   tone: ToastTone;
+};
+
+type SyncDomainId =
+  | "settings"
+  | "projects"
+  | "servers"
+  | "localSessionPresets"
+  | "localGitRepositories"
+  | "terminalCommands"
+  | "keychainItems"
+  | "tmuxMetadata"
+  | "sessionHistory";
+
+type SessionRuntimeMetadata = {
+  targetKind: "local" | "server";
+  serverRef: string | null;
+  serverLabel: string | null;
+  tmuxSession: string | null;
+  cwd: string | null;
+  title: string;
+  startedAt: string;
+};
+
+type RelayConflictState = {
+  relayUrl: string;
+  remoteBundle: HermesSyncBundle;
+  localBundle: HermesSyncBundle;
+  mergedBundle: HermesSyncBundle;
+  conflictingDomains: SyncDomainId[];
+  remoteSnapshotId: string | null;
+  remoteSequence: number;
+  remotePayloadHash: string;
 };
 
 export function App() {
@@ -212,6 +270,12 @@ export function App() {
   const [localGitRepositories, setLocalGitRepositories] = useState<LocalGitRepository[]>(() =>
     loadLocalGitRepositories()
   );
+  const [tmuxMetadata, setTmuxMetadata] = useState<SyncedTmuxMetadataRecord[]>(() =>
+    loadLocalTmuxMetadata()
+  );
+  const [sessionHistory, setSessionHistory] = useState<SyncedTerminalHistoryRecord[]>(() =>
+    loadLocalTerminalHistory()
+  );
   const [gitRepositoryStates, setGitRepositoryStates] = useState<GitRepositoryState[]>([]);
   const [selectedGitRepositoryId, setSelectedGitRepositoryId] = useState<string | null>(null);
   const [gitLoading, setGitLoading] = useState(false);
@@ -244,13 +308,15 @@ export function App() {
     loadRelayClientState(devicePlatform)
   );
   const [relaySetupOpen, setRelaySetupOpen] = useState(false);
+  const [localAccountName, setLocalAccountName] = useState<string | null>(null);
   const [relayInstallSessionId, setRelayInstallSessionId] = useState<string | null>(null);
   const [relayInstallState, setRelayInstallState] = useState<
     "idle" | "installing" | "checking" | "ready" | "error"
   >("idle");
   const [relayInstallMessage, setRelayInstallMessage] = useState<string | null>(null);
+  const [relayConflictState, setRelayConflictState] = useState<RelayConflictState | null>(null);
   const [relayBusyAction, setRelayBusyAction] = useState<
-    "refresh" | "revoke" | "health" | "inspect" | null
+    "refresh" | "revoke" | "health" | "inspect" | "approve" | null
   >(null);
   const [syncBusyAction, setSyncBusyAction] = useState<"export" | "import" | null>(null);
   const [toasts, setToasts] = useState<ToastRecord[]>([]);
@@ -261,6 +327,12 @@ export function App() {
     Map<string, Pick<TerminalStatusEvent, "status" | "message">>
   >(new Map());
   const relayInstallWatcherRef = useRef<number | null>(null);
+  const relayDeviceNameSyncRef = useRef(false);
+  const relaySyncDebounceRef = useRef<number | null>(null);
+  const relaySyncInFlightRef = useRef(false);
+  const relayApplyingSnapshotRef = useRef(false);
+  const relayLastPublishedPayloadRef = useRef<string | null>(null);
+  const sessionRuntimeMetadataRef = useRef<Map<string, SessionRuntimeMetadata>>(new Map());
 
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
@@ -498,6 +570,10 @@ export function App() {
     settings.customTerminalLabel,
     settings.customTerminalProgram
   ]);
+  const defaultRelayDeviceLabel = useMemo(
+    () => getDefaultRelayDeviceName(devicePlatform),
+    [devicePlatform]
+  );
 
   useEffect(() => {
     void refreshWorkspace();
@@ -548,12 +624,35 @@ export function App() {
   }, [localGitRepositories]);
 
   useEffect(() => {
+    persistLocalTmuxMetadata(tmuxMetadata);
+  }, [tmuxMetadata]);
+
+  useEffect(() => {
+    persistLocalTerminalHistory(sessionHistory);
+  }, [sessionHistory]);
+
+  useEffect(() => {
     persistHermesSettings(settings);
   }, [settings]);
 
   useEffect(() => {
     persistRelayClientState(relayState);
   }, [relayState]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+
+    void getLocalAccountName()
+      .then((value) => {
+        const normalized = value?.trim();
+        if (normalized) {
+          setLocalAccountName(normalized);
+        }
+      })
+      .catch(() => undefined);
+  }, []);
 
   useEffect(
     () => () => {
@@ -760,6 +859,10 @@ export function App() {
     return () => {
       toastTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
       toastTimeoutsRef.current.clear();
+      if (relaySyncDebounceRef.current !== null) {
+        window.clearTimeout(relaySyncDebounceRef.current);
+        relaySyncDebounceRef.current = null;
+      }
     };
   }, []);
 
@@ -862,11 +965,56 @@ export function App() {
     setKeychainItems(items);
   };
 
+  const recordTmuxMetadata = (
+    server: ServerRecord,
+    sessionNames: string[],
+    lastAttachedSession: string | null
+  ) => {
+    const serverRef = buildSyncServerRef(server);
+    setTmuxMetadata((current) => {
+      const existing = current.find((record) => record.serverRef === serverRef) ?? null;
+      const nextRecord: SyncedTmuxMetadataRecord = {
+        serverRef,
+        serverLabel: serverDisplayLabel(server),
+        sessionNames: [
+          ...new Set(
+            (sessionNames.length > 0 ? sessionNames : existing?.sessionNames ?? []).filter(
+              (name) => name.trim().length > 0
+            )
+          )
+        ].sort((left, right) => left.localeCompare(right)),
+        lastAttachedSession:
+          lastAttachedSession?.trim() || existing?.lastAttachedSession || null,
+        lastSeenAt: new Date().toISOString()
+      };
+
+      return upsertTmuxMetadataRecord(current, nextRecord);
+    });
+  };
+
+  const recordTerminalHistory = (entry: SyncedTerminalHistoryRecord) => {
+    setSessionHistory((current) => {
+      const next = [
+        entry,
+        ...current.filter((candidate) => candidate.id !== entry.id)
+      ];
+      return next.slice(0, MAX_SYNCED_HISTORY_RECORDS);
+    });
+  };
+
   const refreshTmuxSessions = async (serverId: string) => {
     setTmuxLoading(true);
     try {
       const sessions = await listTmuxSessions(serverId);
       setTmuxSessions(sessions);
+      const server = servers.find((candidate) => candidate.id === serverId);
+      if (server) {
+        recordTmuxMetadata(
+          server,
+          sessions.map((session) => session.name),
+          server.tmuxSession.trim() || null
+        );
+      }
     } catch {
       setTmuxSessions([]);
     } finally {
@@ -1079,6 +1227,22 @@ export function App() {
           status: pendingState?.status ?? tab.status
         }
       ]);
+      if (server) {
+        const resolvedTmuxSession =
+          tmuxSession?.trim() || (server.useTmux ? server.tmuxSession.trim() : "") || null;
+        sessionRuntimeMetadataRef.current.set(tab.id, {
+          targetKind: "server",
+          serverRef: buildSyncServerRef(server),
+          serverLabel: serverDisplayLabel(server),
+          tmuxSession: resolvedTmuxSession,
+          cwd: tab.cwd,
+          title: tab.title,
+          startedAt: tab.startedAt
+        });
+        if (resolvedTmuxSession) {
+          recordTmuxMetadata(server, [], resolvedTmuxSession);
+        }
+      }
       if (activateView) {
         setActiveTabId(tab.id);
       }
@@ -1123,6 +1287,15 @@ export function App() {
           status: pendingState?.status ?? tab.status
         }
       ]);
+      sessionRuntimeMetadataRef.current.set(tab.id, {
+        targetKind: "local",
+        serverRef: null,
+        serverLabel: null,
+        tmuxSession: null,
+        cwd: resolvedInput.cwd ?? tab.cwd,
+        title: resolvedInput.label ?? tab.title,
+        startedAt: tab.startedAt
+      });
       setActiveTabId(tab.id);
     } catch (error) {
       pushToast(getErrorMessage(error), "error");
@@ -1187,12 +1360,14 @@ export function App() {
         }));
 
         if (inspection.relayHealthy && candidateUrls.length > 0) {
-          const { autoBootstrapped, health, relayUrl } = await connectRelayWithCandidates(candidateUrls);
+          const { autoBootstrapped, health, relayUrl, session } = await connectRelayWithCandidates(candidateUrls);
           setRelayInstallState("ready");
           setRelayInstallMessage(
             autoBootstrapped
               ? `Relay ${health.relayId.slice(0, 8)} is live. This device is now the master.`
-              : `Relay ${health.relayId.slice(0, 8)} is live at ${relayUrl} and linked to this device.`
+              : session.currentDeviceStatus === "pending"
+                ? `Relay ${health.relayId.slice(0, 8)} is live at ${relayUrl}. This device is waiting for master approval.`
+                : `Relay ${health.relayId.slice(0, 8)} is live at ${relayUrl} and linked to this device.`
           );
           pushToast(
             autoBootstrapped
@@ -1247,22 +1422,47 @@ export function App() {
   const openRelaySetup = (serverId?: string) => {
     const targetServerId = serverId ?? relayState.hostServerId;
     const switchedHost = Boolean(targetServerId && targetServerId !== relayState.hostServerId);
+    const alreadyConnectedHost =
+      Boolean(targetServerId) &&
+      targetServerId === relayState.hostServerId &&
+      (
+        relayState.relayInstalled ||
+        relayState.relayHealthy ||
+        Boolean(relayState.relayId) ||
+        Boolean(relayState.currentDeviceRole) ||
+        relayState.currentDeviceStatus === "approved" ||
+        relayState.devices.length > 0
+      );
     if (targetServerId) {
       updateRelayState((current) => ({
         ...current,
-        hostServerId: targetServerId
+        hostServerId: targetServerId,
+        detectedRelayUrl: switchedHost ? null : current.detectedRelayUrl,
+        detectedRelayUrls: switchedHost ? [] : current.detectedRelayUrls,
+        tailscaleIpv4: switchedHost ? null : current.tailscaleIpv4,
+        tailscaleDnsName: switchedHost ? null : current.tailscaleDnsName,
+        relayInstalled: switchedHost ? false : current.relayInstalled,
+        relayRunning: switchedHost ? false : current.relayRunning,
+        relayHealthy: switchedHost ? false : current.relayHealthy,
+        relayVersion: switchedHost ? null : current.relayVersion,
+        lastHostCheckAt: switchedHost ? null : current.lastHostCheckAt
       }));
     }
 
     setRelaySetupOpen(true);
     if (switchedHost) {
       setRelayInstallSessionId(null);
-      setRelayInstallState("idle");
+      setRelayInstallState("checking");
+      setRelayInstallMessage("Checking this server for an existing relay and discovering the Tailscale endpoint.");
+    } else if (alreadyConnectedHost) {
+      setRelayInstallState("ready");
       setRelayInstallMessage(null);
     }
 
-    if (targetServerId) {
-      void handleInspectRelayHostByServerId(targetServerId);
+    if (targetServerId && !alreadyConnectedHost) {
+      void handleInspectRelayHostByServerId(targetServerId, {
+        silentIfConnected: true
+      });
     }
   };
 
@@ -1308,7 +1508,7 @@ export function App() {
 
   const loadToolUpdates = async () => {
     if (!isTauriRuntime()) {
-      pushToast("Agent updates are only available in the desktop app.", "info");
+      pushToast("Tool updates are only available in the desktop app.", "info");
       return;
     }
 
@@ -1352,21 +1552,148 @@ export function App() {
     void loadToolUpdates();
   };
 
-  const handleExportSyncBundle = () => {
+  const buildCurrentSyncBundle = async (exportedAt = new Date().toISOString()) => {
+    const keychainItemsForSync: SyncedKeychainItem[] | null =
+      settings.syncIncludesSecrets && isTauriRuntime()
+        ? await listSyncableKeychainItems()
+        : null;
+
+    return buildHermesSyncBundle({
+      settings: settings.syncIncludesSettings
+        ? {
+            ...settings,
+            lastExportedAt: exportedAt
+          }
+        : null,
+      projects,
+      servers,
+      localSessionPresets,
+      localGitRepositories: settings.syncIncludesPinnedRepositories ? localGitRepositories : null,
+      terminalCommands: settings.syncIncludesCommands ? terminalCommands : null,
+      keychainItems: keychainItemsForSync,
+      tmuxMetadata: settings.syncIncludesTmuxMetadata ? tmuxMetadata : null,
+      sessionHistory: settings.syncIncludesHistory ? sessionHistory : null
+    });
+  };
+
+  const applySyncBundle = async (
+    bundle: HermesSyncBundle,
+    options?: {
+      importedAt?: string;
+      announceSuccess?: boolean;
+    }
+  ) => {
+    if (!isTauriRuntime()) {
+      throw new Error("Workspace import is only available in the desktop runtime.");
+    }
+
+    const credentialIdByKey = new Map<string, string>();
+    for (const item of keychainItems) {
+      credentialIdByKey.set(`${item.kind}\u0000${item.name}`, item.id);
+    }
+
+    if (bundle.keychainItems && isTauriRuntime()) {
+      const syncedItems = await upsertSyncableKeychainItems(bundle.keychainItems);
+      for (const item of syncedItems) {
+        credentialIdByKey.set(`${item.kind}\u0000${item.name}`, item.id);
+      }
+    }
+
+    if (bundle.terminalCommands !== null) {
+      for (const command of terminalCommands) {
+        await deleteTerminalCommand(command.id);
+      }
+    }
+
+    for (const project of projects) {
+      await deleteProject(project.id);
+    }
+
+    const projectIdMap = new Map<string, string>();
+
+    for (const project of bundle.projects) {
+      const createdProject = await createProject({
+        name: project.name,
+        description: project.description
+      });
+      projectIdMap.set(project.id, createdProject.id);
+    }
+
+    for (const server of bundle.servers) {
+      const mappedProjectId = projectIdMap.get(server.projectId);
+      if (!mappedProjectId) {
+        continue;
+      }
+
+      await createServer({
+        projectId: mappedProjectId,
+        name: server.name,
+        hostname: server.hostname,
+        port: server.port,
+        username: server.username,
+        authKind: server.authKind,
+        credentialId:
+          server.credentialName && server.authKind !== "default"
+            ? credentialIdByKey.get(`${server.authKind}\u0000${server.credentialName}`) ?? null
+            : null,
+        credentialName: server.credentialName ?? "",
+        credentialSecret: "",
+        isFavorite: server.isFavorite,
+        tmuxSession: server.tmuxSession,
+        useTmux: server.useTmux,
+        notes: server.notes
+      });
+    }
+
+    if (bundle.terminalCommands !== null) {
+      for (const command of bundle.terminalCommands) {
+        await createTerminalCommand({
+          name: command.name,
+          command: command.command
+        });
+      }
+    }
+
+    setLocalSessionPresets(bundle.localSessionPresets);
+    if (bundle.localGitRepositories !== null) {
+      setLocalGitRepositories(bundle.localGitRepositories);
+    }
+    if (bundle.tmuxMetadata !== null) {
+      setTmuxMetadata(bundle.tmuxMetadata);
+    }
+    if (bundle.sessionHistory !== null) {
+      setSessionHistory(bundle.sessionHistory);
+    }
+    if (bundle.settings !== null) {
+      updateSettings({
+        ...bundle.settings,
+        lastImportedAt: options?.importedAt ?? new Date().toISOString()
+      });
+    } else {
+      updateSettings((current) => ({
+        ...current,
+        lastImportedAt: options?.importedAt ?? new Date().toISOString()
+      }));
+    }
+
+    await refreshWorkspace();
+    if (bundle.terminalCommands !== null) {
+      await loadSavedTerminalCommands();
+    }
+    if (bundle.keychainItems !== null) {
+      await refreshKeychain();
+    }
+
+    if (options?.announceSuccess) {
+      pushToast("Imported the Hermes sync bundle.", "success");
+    }
+  };
+
+  const handleExportSyncBundle = async () => {
     setSyncBusyAction("export");
     try {
       const exportedAt = new Date().toISOString();
-      const bundle = buildHermesSyncBundle({
-        settings: {
-          ...settings,
-          lastExportedAt: exportedAt
-        },
-        projects,
-        servers,
-        localSessionPresets,
-        localGitRepositories: settings.syncIncludesPinnedRepositories ? localGitRepositories : [],
-        terminalCommands: settings.syncIncludesCommands ? terminalCommands : []
-      });
+      const bundle = await buildCurrentSyncBundle(exportedAt);
 
       const url = window.URL.createObjectURL(
         new Blob([JSON.stringify(bundle, null, 2)], {
@@ -1393,7 +1720,7 @@ export function App() {
 
   const handleImportSyncBundle = async (file: File) => {
     const confirmation = window.confirm(
-      `Replace local workspaces, servers, saved terminal commands, and settings with ${file.name}? Keychain secrets remain on this device.`
+      `Replace the local Hermes sync domains included in ${file.name}?`
     );
     if (!confirmation) {
       return;
@@ -1402,69 +1729,10 @@ export function App() {
     setSyncBusyAction("import");
     try {
       const bundle = parseHermesSyncBundle(await file.text(), devicePlatform);
-
-      if (!isTauriRuntime()) {
-        throw new Error("Workspace import is only available in the desktop runtime.");
-      }
-
-      for (const command of terminalCommands) {
-        await deleteTerminalCommand(command.id);
-      }
-
-      for (const project of projects) {
-        await deleteProject(project.id);
-      }
-
-      const projectIdMap = new Map<string, string>();
-
-      for (const project of bundle.projects) {
-        const createdProject = await createProject({
-          name: project.name,
-          description: project.description
-        });
-        projectIdMap.set(project.id, createdProject.id);
-      }
-
-      for (const server of bundle.servers) {
-        const mappedProjectId = projectIdMap.get(server.projectId);
-        if (!mappedProjectId) {
-          continue;
-        }
-
-        await createServer({
-          projectId: mappedProjectId,
-          name: server.name,
-          hostname: server.hostname,
-          port: server.port,
-          username: server.username,
-          authKind: server.authKind,
-          credentialId: null,
-          credentialName: server.credentialName ?? "",
-          credentialSecret: "",
-          isFavorite: server.isFavorite,
-          tmuxSession: server.tmuxSession,
-          useTmux: server.useTmux,
-          notes: server.notes
-        });
-      }
-
-      for (const command of bundle.terminalCommands) {
-        await createTerminalCommand({
-          name: command.name,
-          command: command.command
-        });
-      }
-
-      setLocalSessionPresets(bundle.localSessionPresets);
-      setLocalGitRepositories(bundle.localGitRepositories);
-      updateSettings({
-        ...bundle.settings,
-        lastImportedAt: new Date().toISOString()
+      await applySyncBundle(bundle, {
+        importedAt: new Date().toISOString(),
+        announceSuccess: true
       });
-
-      await refreshWorkspace();
-      await loadSavedTerminalCommands();
-      pushToast("Imported settings and local workspace bundle.", "success");
     } catch (error) {
       pushToast(getErrorMessage(error), "error");
     } finally {
@@ -1481,8 +1749,16 @@ export function App() {
       relayId: session.relayId,
       currentDeviceId: session.currentDeviceId,
       currentDeviceRole: session.currentDeviceRole,
-      adminToken: session.adminToken,
+      currentDeviceStatus: session.currentDeviceStatus,
+      adminToken:
+        session.adminToken ??
+        (session.currentDeviceRole === "master" && session.currentDeviceStatus === "approved"
+          ? current.adminToken
+          : null),
       devices: session.workspace.devices,
+      latestSequence: session.latestSequence,
+      latestSnapshotId: session.latestSnapshotId,
+      latestSnapshotAt: session.latestSnapshotAt,
       lastConnectedAt: new Date().toISOString(),
       lastError: null
     }));
@@ -1501,6 +1777,752 @@ export function App() {
       });
   };
 
+  const normalizeSyncBundleForHash = (
+    bundle: HermesSyncBundle
+  ) =>
+    JSON.stringify({
+      ...bundle,
+      exportedAt: "",
+      settings:
+        bundle.settings === null
+          ? null
+          : {
+              ...bundle.settings,
+              lastExportedAt: null,
+              lastImportedAt: null
+            }
+    });
+
+  const canonicalizeSyncBundle = (bundle: HermesSyncBundle) => {
+    const projectNamesById = new Map(
+      bundle.projects.map((project) => [project.id, project.name.trim()] as const)
+    );
+
+    return {
+      settings:
+        bundle.settings === null
+          ? null
+          : {
+              ...bundle.settings,
+              lastExportedAt: null,
+              lastImportedAt: null
+            },
+      projects: bundle.projects
+        .map((project) => ({
+          name: project.name.trim(),
+          description: project.description.trim()
+        }))
+        .sort((left, right) =>
+          `${left.name}\u0000${left.description}`.localeCompare(
+            `${right.name}\u0000${right.description}`
+          )
+        ),
+      servers: bundle.servers
+        .map((server) => ({
+          projectName: projectNamesById.get(server.projectId) ?? server.projectId,
+          name: server.name.trim(),
+          hostname: server.hostname.trim(),
+          port: server.port,
+          username: server.username.trim(),
+          authKind: server.authKind,
+          credentialName: server.credentialName ?? "",
+          isFavorite: server.isFavorite,
+          tmuxSession: server.tmuxSession.trim(),
+          useTmux: server.useTmux,
+          notes: server.notes.trim()
+        }))
+        .sort((left, right) =>
+          JSON.stringify(left).localeCompare(JSON.stringify(right))
+        ),
+      localSessionPresets: bundle.localSessionPresets
+        .map((preset) => ({
+          name: preset.name.trim(),
+          path: preset.path.trim()
+        }))
+        .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
+      localGitRepositories:
+        bundle.localGitRepositories === null
+          ? null
+          : bundle.localGitRepositories
+              .map((repository) => ({
+                name: repository.name.trim(),
+                path: repository.path.trim()
+              }))
+              .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
+      terminalCommands:
+        bundle.terminalCommands === null
+          ? null
+          : bundle.terminalCommands
+              .map((command) => ({
+                name: command.name.trim(),
+                command: command.command.trim()
+              }))
+              .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
+      keychainItems:
+        bundle.keychainItems === null
+          ? null
+          : bundle.keychainItems
+              .map((item) => ({
+                name: item.name.trim(),
+                kind: item.kind,
+                secret: item.secret,
+                publicKey: item.publicKey?.trim() || null
+              }))
+              .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
+      tmuxMetadata:
+        bundle.tmuxMetadata === null
+          ? null
+          : bundle.tmuxMetadata
+              .map((record) => ({
+                serverRef: record.serverRef.trim(),
+                serverLabel: record.serverLabel.trim(),
+                sessionNames: [...record.sessionNames].sort((left, right) => left.localeCompare(right)),
+                lastAttachedSession: record.lastAttachedSession?.trim() || null,
+                lastSeenAt: record.lastSeenAt
+              }))
+              .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
+      sessionHistory:
+        bundle.sessionHistory === null
+          ? null
+          : bundle.sessionHistory
+              .map((record) => ({
+                ...record,
+                serverRef: record.serverRef?.trim() || null,
+                serverLabel: record.serverLabel?.trim() || null,
+                title: record.title.trim(),
+                cwd: record.cwd?.trim() || null,
+                tmuxSession: record.tmuxSession?.trim() || null,
+                reason: record.reason.trim()
+              }))
+              .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)))
+    };
+  };
+
+  const getCanonicalDomainValue = (bundle: HermesSyncBundle, domain: SyncDomainId) =>
+    canonicalizeSyncBundle(bundle)[domain];
+
+  const domainEquals = (left: HermesSyncBundle, right: HermesSyncBundle, domain: SyncDomainId) =>
+    JSON.stringify(getCanonicalDomainValue(left, domain)) ===
+    JSON.stringify(getCanonicalDomainValue(right, domain));
+
+  const bundleEquals = (left: HermesSyncBundle, right: HermesSyncBundle) =>
+    JSON.stringify(canonicalizeSyncBundle(left)) === JSON.stringify(canonicalizeSyncBundle(right));
+
+  const mergeSyncBundles = (
+    base: HermesSyncBundle,
+    local: HermesSyncBundle,
+    remote: HermesSyncBundle
+  ) => {
+    const domains: SyncDomainId[] = [
+      "settings",
+      "projects",
+      "servers",
+      "localSessionPresets",
+      "localGitRepositories",
+      "terminalCommands",
+      "keychainItems",
+      "tmuxMetadata",
+      "sessionHistory"
+    ];
+    const merged: HermesSyncBundle = {
+      ...local,
+      settings: local.settings,
+      projects: local.projects,
+      servers: local.servers,
+      localSessionPresets: local.localSessionPresets,
+      localGitRepositories: local.localGitRepositories,
+      terminalCommands: local.terminalCommands,
+      keychainItems: local.keychainItems,
+      tmuxMetadata: local.tmuxMetadata,
+      sessionHistory: local.sessionHistory
+    };
+    const conflictingDomains: SyncDomainId[] = [];
+    const assignMergedDomain = (
+      target: HermesSyncBundle,
+      source: HermesSyncBundle,
+      domain: SyncDomainId
+    ) => {
+      switch (domain) {
+        case "settings":
+          target.settings = source.settings;
+          break;
+        case "projects":
+          target.projects = source.projects;
+          break;
+        case "servers":
+          target.servers = source.servers;
+          break;
+        case "localSessionPresets":
+          target.localSessionPresets = source.localSessionPresets;
+          break;
+        case "localGitRepositories":
+          target.localGitRepositories = source.localGitRepositories;
+          break;
+        case "terminalCommands":
+          target.terminalCommands = source.terminalCommands;
+          break;
+        case "keychainItems":
+          target.keychainItems = source.keychainItems;
+          break;
+        case "tmuxMetadata":
+          target.tmuxMetadata = source.tmuxMetadata;
+          break;
+        case "sessionHistory":
+          target.sessionHistory = source.sessionHistory;
+          break;
+      }
+    };
+
+    for (const domain of domains) {
+      const baseEqualsLocal = domainEquals(base, local, domain);
+      const baseEqualsRemote = domainEquals(base, remote, domain);
+      const localEqualsRemote = domainEquals(local, remote, domain);
+
+      if (baseEqualsLocal && !baseEqualsRemote) {
+        assignMergedDomain(merged, remote, domain);
+        continue;
+      }
+
+      if (baseEqualsRemote || localEqualsRemote) {
+        assignMergedDomain(merged, local, domain);
+        continue;
+      }
+
+      conflictingDomains.push(domain);
+    }
+
+    merged.exportedAt = new Date().toISOString();
+    return {
+      merged,
+      conflictingDomains
+    };
+  };
+
+  const fillBundleMissingDomains = (
+    bundle: HermesSyncBundle,
+    fallback: HermesSyncBundle | null
+  ): HermesSyncBundle => {
+    if (!fallback) {
+      return bundle;
+    }
+
+    return {
+      ...bundle,
+      settings: bundle.settings ?? fallback.settings,
+      localGitRepositories: bundle.localGitRepositories ?? fallback.localGitRepositories,
+      terminalCommands: bundle.terminalCommands ?? fallback.terminalCommands,
+      keychainItems: bundle.keychainItems ?? fallback.keychainItems,
+      tmuxMetadata: bundle.tmuxMetadata ?? fallback.tmuxMetadata,
+      sessionHistory: bundle.sessionHistory ?? fallback.sessionHistory
+    };
+  };
+
+  const hashRelayPayload = async (payload: string) => {
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(payload)
+    );
+    return btoa(String.fromCharCode(...new Uint8Array(digest)));
+  };
+
+  const setRelayConflict = (message: string | null) => {
+    if (!message) {
+      setRelayConflictState(null);
+    }
+    updateRelayState((current) => ({
+      ...current,
+      syncConflict: message,
+      lastError: message
+    }));
+  };
+
+  const getCurrentSyncPayload = async () => {
+    const exportedAt = new Date().toISOString();
+    const rawBundle = await buildCurrentSyncBundle(exportedAt);
+    const bundle = fillBundleMissingDomains(
+      rawBundle,
+      relayState.lastAppliedBundleJson
+        ? parseHermesSyncBundle(relayState.lastAppliedBundleJson, devicePlatform)
+        : null
+    );
+    const payloadJson = JSON.stringify(bundle);
+    const payloadHash = await hashRelayPayload(normalizeSyncBundleForHash(bundle));
+    return {
+      bundle,
+      exportedAt,
+      payloadJson,
+      payloadHash
+    };
+  };
+
+  const pullLatestRelaySnapshot = async (
+    relayUrl: string,
+    options?: {
+      workspaceId?: string;
+      deviceId?: string;
+      devices?: RelayWorkspaceSession["workspace"]["devices"];
+      latestSnapshotId?: string | null;
+      appliedSequence?: number;
+    }
+  ) => {
+    const workspaceId = options?.workspaceId ?? relayState.workspaceId;
+    const deviceId = options?.deviceId ?? relayState.currentDeviceId;
+    const devices = options?.devices ?? relayState.devices;
+    const knownSnapshotId = options?.latestSnapshotId ?? relayState.latestSnapshotId;
+    const appliedSequence = options?.appliedSequence ?? relayState.lastAppliedSequence;
+
+    if (!workspaceId || !deviceId) {
+      return false;
+    }
+
+    const latest = await getRelayLatestSnapshot(relayUrl, {
+      workspaceId,
+      deviceId
+    });
+
+    updateRelayState((current) => ({
+      ...current,
+      latestSequence: latest.latestSequence,
+      latestSnapshotId: latest.snapshot?.snapshotId ?? current.latestSnapshotId,
+      latestSnapshotAt: latest.snapshot?.createdAt ?? current.latestSnapshotAt
+    }));
+
+    if (!latest.snapshot) {
+      return false;
+    }
+
+    if (knownSnapshotId && latest.snapshot.snapshotId === knownSnapshotId) {
+      return false;
+    }
+
+    const author = devices.find((candidate) => candidate.id === latest.snapshot?.authorDeviceId);
+    if (!author) {
+      throw new Error("Relay snapshot author is not known to this device.");
+    }
+
+    const payloadJson = await decryptRelayEncryptedSnapshot(
+      workspaceId,
+      deviceId,
+      author.publicKeys.signingPublicKey,
+      latest.snapshot
+    );
+    const bundle = parseHermesSyncBundle(payloadJson, devicePlatform);
+    const payloadHash = await hashRelayPayload(normalizeSyncBundleForHash(bundle));
+
+    if (relayLastPublishedPayloadRef.current === payloadJson) {
+      updateRelayState((current) => ({
+        ...current,
+        latestSequence: latest.latestSequence,
+        latestSnapshotId: latest.snapshot?.snapshotId ?? current.latestSnapshotId,
+        latestSnapshotAt: latest.snapshot?.createdAt ?? current.latestSnapshotAt,
+        lastAppliedSequence: latest.latestSequence,
+        lastAppliedPayloadHash: payloadHash,
+        lastAppliedBundleJson: payloadJson,
+        syncConflict: null
+      }));
+      return false;
+    }
+
+    relayApplyingSnapshotRef.current = true;
+    try {
+      await applySyncBundle(bundle, {
+        importedAt: latest.snapshot.createdAt
+      });
+      relayLastPublishedPayloadRef.current = payloadJson;
+      updateRelayState((current) => ({
+        ...current,
+        latestSequence: latest.latestSequence,
+        latestSnapshotId: latest.snapshot?.snapshotId ?? current.latestSnapshotId,
+        latestSnapshotAt: latest.snapshot?.createdAt ?? current.latestSnapshotAt,
+        lastAppliedSequence: Math.max(appliedSequence, latest.latestSequence),
+        lastAppliedPayloadHash: payloadHash,
+        lastAppliedBundleJson: payloadJson,
+        syncConflict: null,
+        lastError: null
+      }));
+    } finally {
+      relayApplyingSnapshotRef.current = false;
+    }
+
+    return true;
+  };
+
+  const publishRelaySnapshot = async (relayUrl: string) => {
+    if (!relayState.workspaceId || !relayState.currentDeviceId) {
+      return false;
+    }
+
+    const { exportedAt, payloadJson, payloadHash } = await getCurrentSyncPayload();
+    if (relayState.syncConflict) {
+      return false;
+    }
+    if (relayLastPublishedPayloadRef.current === payloadJson && relayState.latestSnapshotId) {
+      return false;
+    }
+
+    const snapshotId = crypto.randomUUID();
+    const eventId = crypto.randomUUID();
+    const event = await createRelayEncryptedEvent(
+      relayState.workspaceId,
+      relayState.currentDeviceId,
+      eventId,
+      relayState.latestSequence + 1,
+      JSON.stringify({
+        kind: "workspace.snapshot.updated",
+        snapshotId,
+        payloadHash,
+        exportedAt
+      })
+    );
+    const acceptedEvents = await postRelayEvents(relayUrl, {
+      workspaceId: relayState.workspaceId,
+      deviceId: relayState.currentDeviceId,
+      events: [event]
+    });
+    const snapshot = await createRelayEncryptedSnapshot(
+      relayState.workspaceId,
+      relayState.currentDeviceId,
+      snapshotId,
+      acceptedEvents.acceptedThroughSequence,
+      payloadJson
+    );
+    const latestSnapshot = await postRelaySnapshot(relayUrl, {
+      workspaceId: relayState.workspaceId,
+      deviceId: relayState.currentDeviceId,
+      snapshot
+    });
+
+    relayLastPublishedPayloadRef.current = payloadJson;
+    updateRelayState((current) => ({
+      ...current,
+      latestSequence: latestSnapshot.latestSequence,
+      latestSnapshotId: latestSnapshot.snapshot?.snapshotId ?? current.latestSnapshotId,
+      latestSnapshotAt: latestSnapshot.snapshot?.createdAt ?? current.latestSnapshotAt,
+      lastAppliedSequence: latestSnapshot.latestSequence,
+      lastAppliedPayloadHash: payloadHash,
+      lastAppliedBundleJson: payloadJson,
+      syncConflict: null,
+      lastError: null
+    }));
+
+    return true;
+  };
+
+  const replayRelayEvents = async (
+    relayUrl: string,
+    options?: {
+      workspaceId?: string;
+      deviceId?: string;
+      devices?: RelayWorkspaceSession["workspace"]["devices"];
+      appliedSequence?: number;
+    }
+  ) => {
+    const workspaceId = options?.workspaceId ?? relayState.workspaceId;
+    const deviceId = options?.deviceId ?? relayState.currentDeviceId;
+    const devices = options?.devices ?? relayState.devices;
+    const appliedSequence = options?.appliedSequence ?? relayState.lastAppliedSequence;
+
+    if (!workspaceId || !deviceId) {
+      return {
+        remoteAdvanced: false,
+        remoteChanged: false,
+        latestSequence: appliedSequence
+      };
+    }
+
+    const replay = await getRelayEvents(relayUrl, {
+      workspaceId,
+      deviceId,
+      afterSequence: appliedSequence
+    });
+
+    if (replay.events.length === 0) {
+      updateRelayState((current) => ({
+        ...current,
+        latestSequence: Math.max(current.latestSequence, replay.latestSequence)
+      }));
+      return {
+        remoteAdvanced: replay.latestSequence > appliedSequence,
+        remoteChanged: false,
+        latestSequence: replay.latestSequence
+      };
+    }
+
+    let remoteChanged = false;
+
+    for (const event of replay.events) {
+      const author = devices.find((candidate) => candidate.id === event.authorDeviceId);
+      if (!author) {
+        continue;
+      }
+
+      const payloadJson = await decryptRelayEncryptedEvent(
+        workspaceId,
+        deviceId,
+        author.publicKeys.signingPublicKey,
+        event
+      );
+      const payload = JSON.parse(payloadJson) as {
+        kind?: string;
+        payloadHash?: string;
+      };
+      if (
+        event.authorDeviceId !== deviceId &&
+        payload.kind === "workspace.snapshot.updated"
+      ) {
+        remoteChanged = true;
+      }
+    }
+
+    updateRelayState((current) => ({
+      ...current,
+      latestSequence: Math.max(current.latestSequence, replay.latestSequence)
+    }));
+
+    return {
+      remoteAdvanced: true,
+      remoteChanged,
+      latestSequence: replay.latestSequence
+    };
+  };
+
+  const synchronizeRelayWorkspace = async (
+    relayUrl: string,
+    session: RelayWorkspaceSession
+  ) => {
+    if (session.currentDeviceStatus !== "approved") {
+      return;
+    }
+
+    const currentSync = await getCurrentSyncPayload();
+    const replay = await replayRelayEvents(relayUrl, {
+      workspaceId: session.workspace.id,
+      deviceId: session.currentDeviceId,
+      devices: session.workspace.devices,
+      appliedSequence: relayState.lastAppliedSequence
+    });
+    const localDirty =
+      relayState.lastAppliedPayloadHash !== null &&
+      relayState.lastAppliedPayloadHash !== currentSync.payloadHash;
+
+    if (replay.remoteChanged || session.latestSnapshotId !== relayState.latestSnapshotId) {
+      if (!localDirty) {
+        setRelayConflict(null);
+        await pullLatestRelaySnapshot(relayUrl, {
+          workspaceId: session.workspace.id,
+          deviceId: session.currentDeviceId,
+          devices: session.workspace.devices,
+          latestSnapshotId: relayState.latestSnapshotId,
+          appliedSequence: relayState.lastAppliedSequence
+        });
+        return;
+      }
+
+      const latest = await getRelayLatestSnapshot(relayUrl, {
+        workspaceId: session.workspace.id,
+        deviceId: session.currentDeviceId
+      });
+      if (!latest.snapshot) {
+        setRelayConflict(null);
+        await publishRelaySnapshot(relayUrl);
+        return;
+      }
+
+      const author = session.workspace.devices.find(
+        (device) => device.id === latest.snapshot?.authorDeviceId
+      );
+      if (!author) {
+        throw new Error("Relay snapshot author is not known to this device.");
+      }
+
+      const remotePayloadJson = await decryptRelayEncryptedSnapshot(
+        session.workspace.id,
+        session.currentDeviceId,
+        author.publicKeys.signingPublicKey,
+        latest.snapshot
+      );
+      const remoteBundle = parseHermesSyncBundle(remotePayloadJson, devicePlatform);
+      const remotePayloadHash = await hashRelayPayload(normalizeSyncBundleForHash(remoteBundle));
+      const baseBundle = relayState.lastAppliedBundleJson
+        ? parseHermesSyncBundle(relayState.lastAppliedBundleJson, devicePlatform)
+        : null;
+
+      if (!baseBundle) {
+        const allDomains: SyncDomainId[] = [
+          "settings",
+          "projects",
+          "servers",
+          "localSessionPresets",
+          "localGitRepositories",
+          "terminalCommands",
+          "keychainItems",
+          "tmuxMetadata",
+          "sessionHistory"
+        ];
+        setRelayConflict(
+          "Relay sync needs a local base snapshot before it can merge concurrent changes. Choose whether to keep the local or remote version."
+        );
+        setRelayConflictState({
+          relayUrl,
+          remoteBundle,
+          localBundle: currentSync.bundle,
+          mergedBundle: currentSync.bundle,
+          conflictingDomains: allDomains,
+          remoteSnapshotId: latest.snapshot.snapshotId,
+          remoteSequence: latest.latestSequence,
+          remotePayloadHash
+        });
+        return;
+      }
+
+      const merge = mergeSyncBundles(baseBundle, currentSync.bundle, remoteBundle);
+      if (merge.conflictingDomains.length > 0) {
+        setRelayConflict(
+          `Relay sync found concurrent changes in ${merge.conflictingDomains.join(", ")}. Choose whether to keep the local or remote version for those domains.`
+        );
+        setRelayConflictState({
+          relayUrl,
+          remoteBundle,
+          localBundle: currentSync.bundle,
+          mergedBundle: merge.merged,
+          conflictingDomains: merge.conflictingDomains,
+          remoteSnapshotId: latest.snapshot.snapshotId,
+          remoteSequence: latest.latestSequence,
+          remotePayloadHash
+        });
+        return;
+      }
+
+      setRelayConflict(null);
+      if (!bundleEquals(currentSync.bundle, merge.merged)) {
+        relayApplyingSnapshotRef.current = true;
+        try {
+          await applySyncBundle(merge.merged, {
+            importedAt: new Date().toISOString()
+          });
+        } finally {
+          relayApplyingSnapshotRef.current = false;
+        }
+      }
+
+      await publishRelaySnapshot(relayUrl);
+      return;
+    }
+
+    setRelayConflict(null);
+    if (
+      relayState.lastAppliedPayloadHash === null ||
+      relayState.lastAppliedPayloadHash !== currentSync.payloadHash
+    ) {
+      await publishRelaySnapshot(relayUrl);
+    }
+  };
+
+  const resolveRelayConflict = async (strategy: "local" | "remote") => {
+    if (!relayConflictState) {
+      return;
+    }
+
+    const resolvedBundle: HermesSyncBundle = {
+      ...relayConflictState.mergedBundle,
+      settings:
+        relayConflictState.conflictingDomains.includes("settings")
+          ? strategy === "local"
+            ? relayConflictState.localBundle.settings
+            : relayConflictState.remoteBundle.settings
+          : relayConflictState.mergedBundle.settings,
+      projects:
+        relayConflictState.conflictingDomains.includes("projects")
+          ? strategy === "local"
+            ? relayConflictState.localBundle.projects
+            : relayConflictState.remoteBundle.projects
+          : relayConflictState.mergedBundle.projects,
+      servers:
+        relayConflictState.conflictingDomains.includes("servers")
+          ? strategy === "local"
+            ? relayConflictState.localBundle.servers
+            : relayConflictState.remoteBundle.servers
+          : relayConflictState.mergedBundle.servers,
+      localSessionPresets:
+        relayConflictState.conflictingDomains.includes("localSessionPresets")
+          ? strategy === "local"
+            ? relayConflictState.localBundle.localSessionPresets
+            : relayConflictState.remoteBundle.localSessionPresets
+          : relayConflictState.mergedBundle.localSessionPresets,
+      localGitRepositories:
+        relayConflictState.conflictingDomains.includes("localGitRepositories")
+          ? strategy === "local"
+            ? relayConflictState.localBundle.localGitRepositories
+            : relayConflictState.remoteBundle.localGitRepositories
+          : relayConflictState.mergedBundle.localGitRepositories,
+      terminalCommands:
+        relayConflictState.conflictingDomains.includes("terminalCommands")
+          ? strategy === "local"
+            ? relayConflictState.localBundle.terminalCommands
+            : relayConflictState.remoteBundle.terminalCommands
+          : relayConflictState.mergedBundle.terminalCommands,
+      keychainItems:
+        relayConflictState.conflictingDomains.includes("keychainItems")
+          ? strategy === "local"
+            ? relayConflictState.localBundle.keychainItems
+            : relayConflictState.remoteBundle.keychainItems
+          : relayConflictState.mergedBundle.keychainItems,
+      tmuxMetadata:
+        relayConflictState.conflictingDomains.includes("tmuxMetadata")
+          ? strategy === "local"
+            ? relayConflictState.localBundle.tmuxMetadata
+            : relayConflictState.remoteBundle.tmuxMetadata
+          : relayConflictState.mergedBundle.tmuxMetadata,
+      sessionHistory:
+        relayConflictState.conflictingDomains.includes("sessionHistory")
+          ? strategy === "local"
+            ? relayConflictState.localBundle.sessionHistory
+            : relayConflictState.remoteBundle.sessionHistory
+          : relayConflictState.mergedBundle.sessionHistory
+    };
+
+    setRelayBusyAction("refresh");
+    try {
+      relayApplyingSnapshotRef.current = true;
+      await applySyncBundle(resolvedBundle, {
+        importedAt: new Date().toISOString()
+      });
+      relayApplyingSnapshotRef.current = false;
+
+      setRelayConflict(null);
+      if (bundleEquals(resolvedBundle, relayConflictState.remoteBundle)) {
+        const payloadHash = await hashRelayPayload(normalizeSyncBundleForHash(resolvedBundle));
+        updateRelayState((current) => ({
+          ...current,
+          latestSequence: relayConflictState.remoteSequence,
+          latestSnapshotId: relayConflictState.remoteSnapshotId,
+          lastAppliedSequence: relayConflictState.remoteSequence,
+          lastAppliedPayloadHash: payloadHash,
+          lastAppliedBundleJson: JSON.stringify(relayConflictState.remoteBundle),
+          syncConflict: null,
+          lastError: null
+        }));
+        relayLastPublishedPayloadRef.current = JSON.stringify(relayConflictState.remoteBundle);
+        setRelayConflictState(null);
+      } else {
+        setRelayConflictState(null);
+        await publishRelaySnapshot(relayConflictState.relayUrl);
+      }
+
+      pushToast(
+        strategy === "local"
+          ? "Applied local conflict resolution and resumed relay sync."
+          : "Accepted remote conflict resolution and resumed relay sync.",
+        "success"
+      );
+    } catch (error) {
+      relayApplyingSnapshotRef.current = false;
+      handleRelayError(error);
+    } finally {
+      setRelayBusyAction(null);
+    }
+  };
+
   const connectRelayAtUrl = async (relayUrl: string) => {
     const health = await getRelayHealth(relayUrl);
 
@@ -1510,17 +2532,54 @@ export function App() {
       lastError: null
     }));
 
-    const wasUnlinked = !relayState.currentDeviceId;
+    const identity = await getOrCreateRelayDeviceIdentity(relayState.localDeviceId);
+    const workspaceId = relayState.workspaceId ?? crypto.randomUUID();
+    const workspaceName = relayState.workspaceName.trim() || "Hermes";
+    const bootstrapWorkspace = !relayState.workspaceId;
+    const workspaceBootstrap = bootstrapWorkspace
+      ? {
+          workspaceId,
+          workspaceName,
+          wrappedWorkspaceKey: await wrapRelayWorkspaceKeyForDevice(
+            workspaceId,
+            relayState.localDeviceId,
+            relayState.localDeviceId,
+            identity.publicKeys.encryptionPublicKey
+          )
+        }
+      : undefined;
     const session = await connectRelayWorkspace(relayUrl, {
       deviceId: relayState.localDeviceId,
       deviceName: relayState.deviceName.trim(),
-      devicePlatform: devicePlatform
+      devicePlatform: devicePlatform,
+      publicKeys: identity.publicKeys,
+      workspaceBootstrap
     });
+
+    if (session.currentDeviceStatus === "approved" && !session.wrappedWorkspaceKey) {
+      throw new Error("Relay approved this device but did not return a wrapped workspace key.");
+    }
+
+    if (session.wrappedWorkspaceKey) {
+      await unwrapRelayWorkspaceKey(
+        session.workspace.id,
+        relayState.localDeviceId,
+        session.wrappedWorkspaceKey
+      );
+    }
+
     applyRelaySession(session, relayUrl);
+    if (session.currentDeviceStatus === "approved") {
+      await synchronizeRelayWorkspace(relayUrl, session);
+    }
 
     return {
-      autoBootstrapped: wasUnlinked && session.currentDeviceRole === "master",
-      health
+      autoBootstrapped:
+        bootstrapWorkspace &&
+        session.currentDeviceRole === "master" &&
+        session.currentDeviceStatus === "approved",
+      health,
+      session
     };
   };
 
@@ -1546,6 +2605,146 @@ export function App() {
     throw lastError ?? new Error("No relay endpoint was available.");
   };
 
+  useEffect(() => {
+    if (!localAccountName) {
+      return;
+    }
+
+    const currentName = relayState.deviceName.trim();
+    if (currentName && currentName !== defaultRelayDeviceLabel) {
+      return;
+    }
+
+    if (currentName === localAccountName) {
+      return;
+    }
+
+    updateRelayState((current) => ({
+      ...current,
+      deviceName: localAccountName
+    }));
+  }, [defaultRelayDeviceLabel, localAccountName, relayState.deviceName]);
+
+  useEffect(() => {
+    if (!localAccountName || !relayState.currentDeviceId) {
+      return;
+    }
+
+    const currentDevice = relayState.devices.find(
+      (device) => device.id === relayState.currentDeviceId
+    );
+    if (relayState.deviceName !== localAccountName || currentDevice?.name === localAccountName) {
+      return;
+    }
+
+    const candidateUrls = getRelayCandidateUrls([
+      relayUrls.primary,
+      ...relayState.detectedRelayUrls
+    ]);
+    if (candidateUrls.length === 0 || relayDeviceNameSyncRef.current) {
+      return;
+    }
+
+    relayDeviceNameSyncRef.current = true;
+    void connectRelayWithCandidates(candidateUrls)
+      .catch(() => undefined)
+      .finally(() => {
+        relayDeviceNameSyncRef.current = false;
+      });
+  }, [
+    localAccountName,
+    relayState.currentDeviceId,
+    relayState.deviceName,
+    relayState.detectedRelayUrls,
+    relayState.devices,
+    relayUrls.primary
+  ]);
+
+  useEffect(() => {
+    if (relayApplyingSnapshotRef.current || relaySyncInFlightRef.current) {
+      return;
+    }
+    if (relayState.currentDeviceStatus !== "approved" || !relayState.workspaceId || !relayState.currentDeviceId) {
+      return;
+    }
+
+    const candidateUrls = getRelayCandidateUrls([
+      relayUrls.primary,
+      ...relayState.detectedRelayUrls
+    ]);
+    if (candidateUrls.length === 0) {
+      return;
+    }
+
+    if (relaySyncDebounceRef.current !== null) {
+      window.clearTimeout(relaySyncDebounceRef.current);
+    }
+
+    relaySyncDebounceRef.current = window.setTimeout(() => {
+      relaySyncDebounceRef.current = null;
+      relaySyncInFlightRef.current = true;
+
+      void synchronizeRelayWorkspace(candidateUrls[0], {
+        relayUrl: candidateUrls[0],
+        relayId: relayState.relayId ?? "",
+        workspace: {
+          id: relayState.workspaceId as string,
+          name: relayState.workspaceName,
+          createdAt: "",
+          masterDeviceId:
+            relayState.devices.find((device) => device.role === "master")?.id ??
+            relayState.currentDeviceId!,
+          devices: relayState.devices
+        },
+        currentDeviceId: relayState.currentDeviceId as string,
+        currentDeviceRole: relayState.currentDeviceRole,
+        currentDeviceStatus: relayState.currentDeviceStatus!,
+        wrappedWorkspaceKey: null,
+        adminToken: relayState.adminToken,
+        latestSequence: relayState.latestSequence,
+        latestSnapshotId: relayState.latestSnapshotId,
+        latestSnapshotAt: relayState.latestSnapshotAt
+      })
+        .catch((error) => {
+          updateRelayState((current) => ({
+            ...current,
+            lastError: getErrorMessage(error)
+          }));
+        })
+        .finally(() => {
+          relaySyncInFlightRef.current = false;
+        });
+    }, 1500);
+
+    return () => {
+      if (relaySyncDebounceRef.current !== null) {
+        window.clearTimeout(relaySyncDebounceRef.current);
+        relaySyncDebounceRef.current = null;
+      }
+    };
+  }, [
+    keychainItems,
+    localGitRepositories,
+    localSessionPresets,
+    projects,
+    relayState.currentDeviceId,
+    relayState.currentDeviceStatus,
+    relayState.detectedRelayUrls,
+    relayState.devices,
+    relayState.latestSequence,
+    relayState.latestSnapshotId,
+    relayState.lastAppliedPayloadHash,
+    relayState.lastAppliedSequence,
+    relayState.workspaceId,
+    relayState.workspaceName,
+    relayUrls.primary,
+    servers,
+    settings,
+    sessionHistory,
+    terminalCommands,
+    tmuxMetadata
+  ]);
+
   const handleCheckRelayHealth = async () => {
     const candidateUrls = getRelayCandidateUrls([
       relayUrls.primary,
@@ -1560,12 +2759,14 @@ export function App() {
     setRelayInstallState("checking");
     setRelayInstallMessage("Checking the relay health endpoint and linking this device if it is reachable.");
     try {
-      const { autoBootstrapped, health, relayUrl } = await connectRelayWithCandidates(candidateUrls);
+      const { autoBootstrapped, health, relayUrl, session } = await connectRelayWithCandidates(candidateUrls);
       setRelayInstallState("ready");
       setRelayInstallMessage(
         autoBootstrapped
           ? `Relay ${health.relayId.slice(0, 8)} is reachable. This device is now the master.`
-          : `Relay ${health.relayId.slice(0, 8)} is reachable at ${relayUrl} and linked.`
+          : session.currentDeviceStatus === "pending"
+            ? `Relay ${health.relayId.slice(0, 8)} is reachable at ${relayUrl}. This device is waiting for master approval.`
+            : `Relay ${health.relayId.slice(0, 8)} is reachable at ${relayUrl} and linked.`
       );
       pushToast(
         autoBootstrapped
@@ -1584,7 +2785,12 @@ export function App() {
     await handleInspectRelayHostByServerId(relayState.hostServerId);
   };
 
-  const handleInspectRelayHostByServerId = async (serverId: string | null) => {
+  const handleInspectRelayHostByServerId = async (
+    serverId: string | null,
+    options?: {
+      silentIfConnected?: boolean;
+    }
+  ) => {
     if (!serverId) {
       pushToast("Choose a relay host server first.", "info");
       return;
@@ -1594,7 +2800,6 @@ export function App() {
     setRelayInstallState("checking");
     setRelayInstallMessage("Inspecting the selected host, checking Tailscale, and discovering the relay endpoint.");
     try {
-      const inspectedServer = servers.find((server) => server.id === serverId) ?? null;
       const inspection = await inspectRelayHost(serverId);
       const detectedRelayUrl = inspection.suggestedRelayUrl;
 
@@ -1633,38 +2838,25 @@ export function App() {
       if (!inspection.relayInstalled) {
         setRelayInstallState("idle");
         setRelayInstallMessage("Host inspection passed. Install Hermes Relay and Hermes will keep checking until it is reachable.");
-        pushToast(
-          inspectedServer
-            ? `${serverDisplayLabel(inspectedServer)} is ready for relay install.`
-            : "Host inspection passed and the server is ready for relay install.",
-          "success"
-        );
         return;
       }
 
       if (!inspection.relayHealthy) {
         setRelayInstallState("checking");
         setRelayInstallMessage("Relay package is present on the host. Finish installation or run a relay health check once the container is ready.");
-        pushToast("Relay package detected on the selected host.", "success");
         return;
       }
 
-      const { autoBootstrapped, health, relayUrl } = await connectRelayWithCandidates(candidateUrls);
+      const { autoBootstrapped, health, relayUrl, session } = await connectRelayWithCandidates(candidateUrls);
       setRelayInstallState("ready");
       setRelayInstallMessage(
         autoBootstrapped
           ? `Relay ${health.relayId.slice(0, 8)} is reachable. This device is now the master.`
+          : session.currentDeviceStatus === "pending"
+            ? `Relay is reachable at ${relayUrl}. This device is waiting for master approval.`
           : inspection.relayHealthy
             ? `Relay already detected on this server and this device is linked.`
             : `Host inspection completed. Hermes will use ${relayUrl}.`
-      );
-      pushToast(
-        autoBootstrapped
-          ? `Relay ${health.relayId.slice(0, 8)} is reachable. This device is now the master.`
-          : inspection.relayHealthy
-            ? `Relay already detected on this server. Using ${relayUrl}.`
-            : `Using relay endpoint ${relayUrl}.`,
-        "success"
       );
     } catch (error) {
       handleRelayError(error);
@@ -1706,13 +2898,71 @@ export function App() {
 
     setRelayBusyAction("revoke");
     try {
+      const remainingApprovedDevices = relayState.devices.filter(
+        (device) =>
+          device.id !== deviceId &&
+          device.status === "approved" &&
+          device.revokedAt === null
+      );
+      if (remainingApprovedDevices.length === 0) {
+        throw new Error("At least one approved device must remain after relay rotation.");
+      }
+
+      await rotateRelayWorkspaceKey(relayState.workspaceId);
+      const replacementWorkspaceKeyWraps = await Promise.all(
+        remainingApprovedDevices.map((device) =>
+          wrapRelayWorkspaceKeyForDevice(
+            relayState.workspaceId as string,
+            relayState.currentDeviceId ?? relayState.localDeviceId,
+            device.id,
+            device.publicKeys.encryptionPublicKey
+          )
+        )
+      );
       const session = await revokeRelayDevice(normalizeRelayUrl(relayUrls.primary), {
         workspaceId: relayState.workspaceId,
         adminToken: relayState.adminToken,
-        deviceId
+        deviceId,
+        replacementWorkspaceKeyWraps
       });
       applyRelaySession(session, relayUrls.primary);
+      await publishRelaySnapshot(normalizeRelayUrl(relayUrls.primary));
       pushToast("Revoked linked device.", "success");
+    } catch (error) {
+      handleRelayError(error);
+    } finally {
+      setRelayBusyAction(null);
+    }
+  };
+
+  const handleApproveRelayDevice = async (deviceId: string) => {
+    if (!relayState.workspaceId || !relayState.adminToken || relayState.currentDeviceRole !== "master") {
+      pushToast("Only the relay master device can approve pending devices.", "info");
+      return;
+    }
+
+    const pendingDevice = relayState.devices.find((device) => device.id === deviceId);
+    if (!pendingDevice || pendingDevice.status !== "pending") {
+      pushToast("This relay device is no longer waiting for approval.", "info");
+      return;
+    }
+
+    setRelayBusyAction("approve");
+    try {
+      const wrappedWorkspaceKey = await wrapRelayWorkspaceKeyForDevice(
+        relayState.workspaceId,
+        relayState.currentDeviceId ?? relayState.localDeviceId,
+        pendingDevice.id,
+        pendingDevice.publicKeys.encryptionPublicKey
+      );
+      const session = await approveRelayDevice(normalizeRelayUrl(relayUrls.primary), {
+        workspaceId: relayState.workspaceId,
+        adminToken: relayState.adminToken,
+        pendingDeviceId: pendingDevice.id,
+        wrappedWorkspaceKey
+      });
+      applyRelaySession(session, relayUrls.primary);
+      pushToast(`Approved ${pendingDevice.name}.`, "success");
     } catch (error) {
       handleRelayError(error);
     } finally {
@@ -2521,6 +3771,17 @@ export function App() {
             : tab
         )
       );
+      const tab = tabsRef.current.find((candidate) => candidate.id === event.sessionId);
+      if (tab) {
+        const metadata = sessionRuntimeMetadataRef.current.get(event.sessionId);
+        if (metadata) {
+          sessionRuntimeMetadataRef.current.set(event.sessionId, {
+            ...metadata,
+            title: tab.title,
+            cwd: tab.cwd
+          });
+        }
+      }
     } else {
       const currentPending = pendingTerminalStatesRef.current.get(event.sessionId);
       pendingTerminalStatesRef.current.set(event.sessionId, {
@@ -2538,6 +3799,24 @@ export function App() {
       setRelayInstallState(event.exitCode === 0 ? "checking" : "error");
     }
 
+    const tab = tabsRef.current.find((candidate) => candidate.id === event.sessionId) ?? null;
+    const runtimeMetadata = sessionRuntimeMetadataRef.current.get(event.sessionId) ?? null;
+    if (runtimeMetadata) {
+      recordTerminalHistory({
+        id: event.sessionId,
+        targetKind: runtimeMetadata.targetKind,
+        serverRef: runtimeMetadata.serverRef,
+        serverLabel: runtimeMetadata.serverLabel,
+        title: tab?.title || runtimeMetadata.title,
+        cwd: tab?.cwd ?? runtimeMetadata.cwd,
+        tmuxSession: runtimeMetadata.tmuxSession,
+        startedAt: tab?.startedAt ?? runtimeMetadata.startedAt,
+        endedAt: new Date().toISOString(),
+        exitCode: event.exitCode,
+        reason: event.reason
+      });
+    }
+
     const hasTab = tabsRef.current.some((tab) => tab.id === event.sessionId);
     if (hasTab) {
       setTabs((current) =>
@@ -2552,6 +3831,7 @@ export function App() {
         status: "closed"
       });
     }
+    sessionRuntimeMetadataRef.current.delete(event.sessionId);
   };
 
   const headerTitle =
@@ -2618,6 +3898,8 @@ export function App() {
     view
   });
 
+  const isGitDetailView = view === "git" && Boolean(gitToolbarContext.onBack);
+
   return (
     <main
       className="app-shell"
@@ -2645,6 +3927,7 @@ export function App() {
       <section className="main-panel main-panel--full">
         <AppHeader
           canEditWorkspace={Boolean(selectedProject)}
+          compact={isGitDetailView}
           eyebrow={view === "git" ? gitToolbarContext.headerEyebrow ?? undefined : undefined}
           backLabel="Repositories"
           meta={view === "git" ? gitToolbarContext.headerMeta : undefined}
@@ -2685,16 +3968,17 @@ export function App() {
                 <Server size={14} />
                 Saved server
               </button>
-              <button className="quick-action-chip" onClick={openToolUpdates} type="button">
-                <ArrowUpCircle size={14} />
-                Agent updates
-              </button>
               <button
                 className="quick-action-chip"
                 onClick={openLocalSessionPresetEditor}
                 type="button"
               >
-                Save path
+                <FolderPlus size={14} />
+                Save path shortcut
+              </button>
+              <button className="quick-action-chip" onClick={openToolUpdates} type="button">
+                <ArrowUpCircle size={14} />
+                Tool updates
               </button>
             </div>
             {localSessionPresets.length > 0 ? (
@@ -2765,80 +4049,105 @@ export function App() {
             </div>
           </div>
         ) : view === "git" ? (
-          <div className="main-panel__quick-actions">
+          <div className={`main-panel__quick-actions ${isGitDetailView ? "main-panel__quick-actions--compact" : ""}`}>
             <div className="main-panel__quick-actions-row">
-              <button
-                className="quick-action-chip quick-action-chip--primary"
-                onClick={() => void handleAddGitRepository()}
-                type="button"
-              >
-                <FolderPlus size={14} />
-                Pin checkout
-              </button>
-              <button
-                className="quick-action-chip"
-                disabled={gitLoading}
-                onClick={() => void refreshGitRepositories()}
-                type="button"
-              >
-                <RefreshCcw size={14} />
-                Refresh local
-              </button>
+              {!isGitDetailView ? (
+                <>
+                  <button
+                    className="quick-action-chip quick-action-chip--primary"
+                    onClick={() => void handleAddGitRepository()}
+                    type="button"
+                  >
+                    <FolderPlus size={14} />
+                    Pin checkout
+                  </button>
+                  <button
+                    className="quick-action-chip"
+                    disabled={gitLoading}
+                    onClick={() => void refreshGitRepositories()}
+                    type="button"
+                  >
+                    <RefreshCcw size={14} />
+                    Refresh local
+                  </button>
+                </>
+              ) : null}
               {gitToolbarContext.shellRepositoryId ? (
                 <button
-                  className="quick-action-chip"
+                  className={`quick-action-chip ${isGitDetailView ? "quick-action-chip--icon-only" : ""}`}
                   disabled={gitBusyAction === `shell:${gitToolbarContext.shellRepositoryId}`}
                   onClick={() => void handleOpenGitRepositoryShell(gitToolbarContext.shellRepositoryId!)}
+                  title="Open shell"
                   type="button"
                 >
                   <TerminalSquare size={14} />
-                  {gitBusyAction === `shell:${gitToolbarContext.shellRepositoryId}` ? "Opening..." : "Open shell"}
+                  {isGitDetailView ? null : gitBusyAction === `shell:${gitToolbarContext.shellRepositoryId}` ? "Opening..." : "Open shell"}
                 </button>
               ) : null}
               {gitToolbarContext.reviewRepositoryId ? (
                 <button
-                  className="quick-action-chip"
+                  className={`quick-action-chip ${isGitDetailView ? "quick-action-chip--icon-only" : ""}`}
                   onClick={() => void handleCopyGitReviewDraft(gitToolbarContext.reviewRepositoryId!)}
+                  title="Copy review"
                   type="button"
                 >
                   <Copy size={14} />
-                  Copy review
+                  {isGitDetailView ? null : "Copy review"}
                 </button>
               ) : null}
               {gitToolbarContext.cloneUrl ? (
                 <button
-                  className="quick-action-chip"
+                  className={`quick-action-chip ${isGitDetailView ? "quick-action-chip--icon-only" : ""}`}
                   onClick={() => void handleCopyGitHubCloneUrl(gitToolbarContext.cloneUrl!)}
+                  title="Copy clone URL"
                   type="button"
                 >
                   <Copy size={14} />
-                  Copy clone URL
+                  {isGitDetailView ? null : "Copy clone URL"}
+                </button>
+              ) : null}
+              {isGitDetailView ? (
+                <button
+                  className="quick-action-chip quick-action-chip--icon-only"
+                  disabled={gitLoading}
+                  onClick={() => void refreshGitRepositories()}
+                  title="Refresh local"
+                  type="button"
+                >
+                  <RefreshCcw size={14} />
                 </button>
               ) : null}
               {gitHubSession ? (
                 <>
                   <button
-                    className="quick-action-chip"
+                    className={`quick-action-chip ${isGitDetailView ? "quick-action-chip--icon-only" : ""}`}
                     disabled={gitHubLoading || gitHubRepositoryLoading}
                     onClick={() => void loadGitHubOwnedRepositories()}
+                    title="Refresh GitHub"
                     type="button"
                   >
                     <RefreshCcw size={14} />
-                    Refresh GitHub
+                    {isGitDetailView ? null : "Refresh GitHub"}
                   </button>
-                  <button className="quick-action-chip" onClick={() => void handleDisconnectGitHub()} type="button">
+                  <button
+                    className={`quick-action-chip ${isGitDetailView ? "quick-action-chip--icon-only" : ""}`}
+                    onClick={() => void handleDisconnectGitHub()}
+                    title="Disconnect GitHub"
+                    type="button"
+                  >
                     <Github size={14} />
-                    Disconnect GitHub
+                    {isGitDetailView ? null : "Disconnect GitHub"}
                   </button>
                 </>
               ) : (
                 <button
-                  className="quick-action-chip"
+                  className={`quick-action-chip ${isGitDetailView ? "quick-action-chip--icon-only" : ""}`}
                   onClick={() => setGitHubSetupRequest((current) => current + 1)}
+                  title="Connect GitHub"
                   type="button"
                 >
                   <Github size={14} />
-                  Connect GitHub
+                  {isGitDetailView ? null : "Connect GitHub"}
                 </button>
               )}
             </div>
@@ -2869,8 +4178,6 @@ export function App() {
           gitHubSession={gitHubSession}
           gitLoading={gitLoading}
           localLauncherSummary={localLauncherSummary}
-          relayBusyAction={relayBusyAction}
-          relayState={relayState}
           onAddGitRepository={() => void handleAddGitRepository()}
           onCheckoutGitBranch={(repositoryId, branchName) =>
             void handleCheckoutGitBranch(repositoryId, branchName)
@@ -2908,7 +4215,6 @@ export function App() {
           copyingPublicKeyId={copyingPublicKeyId}
           onDeleteKeychainItem={(id) => void handleDeleteKeychainItem(id)}
           onEditServer={openEditServerById}
-          onOpenRelaySetup={() => openRelaySetup()}
           onOpenRelaySetupFromServer={(serverId) => openRelaySetup(serverId)}
           onExportSyncBundle={handleExportSyncBundle}
           onExit={handleExit}
@@ -2934,12 +4240,10 @@ export function App() {
           onOpenPresetEditor={openLocalSessionPresetEditor}
           onOpenToolUpdates={openToolUpdates}
           onRefreshTmux={() => selectedServerId && void refreshTmuxSessions(selectedServerId)}
-          onRefreshRelayWorkspace={() => void handleRefreshRelayWorkspace()}
           onRefreshGitHubRepositories={() => void loadGitHubOwnedRepositories()}
           onRefreshGitRepositories={() => void refreshGitRepositories()}
           onRemoveGitRepository={handleRemoveGitRepository}
           onRemoveLocalPreset={handleRemoveLocalPreset}
-          onRevokeRelayDevice={(deviceId) => void handleRevokeRelayDevice(deviceId)}
           onRunTerminalCommand={handleRunTerminalCommand}
           onSyncIncludesCommandsChange={(value) =>
             updateSettings((current) => ({
@@ -2947,10 +4251,34 @@ export function App() {
               syncIncludesCommands: value
             }))
           }
+          onSyncIncludesHistoryChange={(value) =>
+            updateSettings((current) => ({
+              ...current,
+              syncIncludesHistory: value
+            }))
+          }
           onSyncIncludesPinnedRepositoriesChange={(value) =>
             updateSettings((current) => ({
               ...current,
               syncIncludesPinnedRepositories: value
+            }))
+          }
+          onSyncIncludesSecretsChange={(value) =>
+            updateSettings((current) => ({
+              ...current,
+              syncIncludesSecrets: value
+            }))
+          }
+          onSyncIncludesSettingsChange={(value) =>
+            updateSettings((current) => ({
+              ...current,
+              syncIncludesSettings: value
+            }))
+          }
+          onSyncIncludesTmuxMetadataChange={(value) =>
+            updateSettings((current) => ({
+              ...current,
+              syncIncludesTmuxMetadata: value
             }))
           }
           onRenameKeychainItem={(item) => {
@@ -2996,14 +4324,17 @@ export function App() {
           selectedProject={selectedProject}
           selectedServer={selectedServer}
           selectedServerId={selectedServerId}
+          sessionHistoryCount={sessionHistory.length}
           servers={servers}
           serverCountByProject={serverCountByProject}
           settings={settings}
           stageClassName={`stage stage--solo ${view === "dashboard" ? "stage--dashboard" : ""}`}
+          syncedKeyCount={keychainItems.filter((item) => item.kind === "sshKey" || item.kind === "password").length}
           syncBusyAction={syncBusyAction}
           tabs={sessionTabs}
           terminalCommands={terminalCommands}
           terminalProfiles={terminalProfiles}
+          tmuxMetadataCount={tmuxMetadata.length}
           tmuxLoading={tmuxLoading}
           tmuxSessions={tmuxSessions}
           view={view}
@@ -3098,19 +4429,23 @@ export function App() {
 
       {relaySetupOpen ? (
         <RelaySetupDialog
+          onApproveRelayDevice={(deviceId) => void handleApproveRelayDevice(deviceId)}
           onCheckRelayHealth={() => void handleCheckRelayHealth()}
           onClose={() => setRelaySetupOpen(false)}
           onInspectRelayHost={() => void handleInspectRelayHost()}
           onOpenRelayInstallSession={() => void handleInstallRelayOnHost()}
           onRefreshRelayWorkspace={() => void handleRefreshRelayWorkspace()}
+          onResolveRelayConflict={(strategy) => void resolveRelayConflict(strategy)}
           onRelayInstallRuntimeChange={(value) =>
             updateRelayState((current) => ({
               ...current,
               installRuntime: value
             }))
           }
+          onRevokeRelayDevice={(deviceId) => void handleRevokeRelayDevice(deviceId)}
           platform={devicePlatform}
           relayBusyAction={relayBusyAction}
+          relayConflictDomains={relayConflictState?.conflictingDomains ?? []}
           relayHostServer={relayHostServer}
           relayInstallMessage={relayInstallMessage}
           relayInstallState={relayInstallState}
@@ -3206,6 +4541,50 @@ function loadLocalGitRepositories(): LocalGitRepository[] {
   }
 }
 
+function loadLocalTmuxMetadata(): SyncedTmuxMetadataRecord[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const raw = window.localStorage.getItem(LOCAL_TMUX_METADATA_KEY);
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.filter(isSyncedTmuxMetadataRecord);
+  } catch {
+    return [];
+  }
+}
+
+function loadLocalTerminalHistory(): SyncedTerminalHistoryRecord[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const raw = window.localStorage.getItem(LOCAL_TERMINAL_HISTORY_KEY);
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.filter(isSyncedTerminalHistoryRecord);
+  } catch {
+    return [];
+  }
+}
+
 function loadGitHubOwnedRepositoriesCache(): GitHubOwnedRepositoriesCache | null {
   if (typeof window === "undefined") {
     return null;
@@ -3260,6 +4639,22 @@ function persistLocalGitRepositories(repositories: LocalGitRepository[]) {
   window.localStorage.setItem(LOCAL_GIT_REPOSITORIES_KEY, JSON.stringify(repositories));
 }
 
+function persistLocalTmuxMetadata(records: SyncedTmuxMetadataRecord[]) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(LOCAL_TMUX_METADATA_KEY, JSON.stringify(records));
+}
+
+function persistLocalTerminalHistory(records: SyncedTerminalHistoryRecord[]) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(LOCAL_TERMINAL_HISTORY_KEY, JSON.stringify(records));
+}
+
 function persistGitHubOwnedRepositoriesCache(cache: GitHubOwnedRepositoriesCache) {
   if (typeof window === "undefined") {
     return;
@@ -3304,6 +4699,21 @@ function isGitHubRepositoryRecord(value: unknown): value is GitHubRepositoryReco
     typeof candidate.cloneUrl === "string" &&
     typeof candidate.defaultBranch === "string"
   );
+}
+
+function buildSyncServerRef(server: Pick<ServerRecord, "hostname" | "port" | "username">) {
+  return `${server.username.trim()}@${server.hostname.trim()}:${server.port}`;
+}
+
+function upsertTmuxMetadataRecord(
+  current: SyncedTmuxMetadataRecord[],
+  nextRecord: SyncedTmuxMetadataRecord
+) {
+  const next = current.filter((record) => record.serverRef !== nextRecord.serverRef);
+  return [
+    nextRecord,
+    ...next
+  ].sort((left, right) => right.lastSeenAt.localeCompare(left.lastSeenAt));
 }
 
 function buildGitReviewDraft(repository: GitRepositoryRecord) {

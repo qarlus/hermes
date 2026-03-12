@@ -1,9 +1,13 @@
 import type {
-  RelayBootstrapRequest,
+  RelayApproveDeviceRequest,
   RelayConnectRequest,
+  RelayGetEventsResponse,
   RelayHealthResponse,
   RelayInspectRequest,
-  RelayJoinRequest,
+  RelayLatestSnapshotResponse,
+  RelayPostEventsRequest,
+  RelayPostEventsResponse,
+  RelayPostSnapshotRequest,
   RelayRevokeDeviceRequest,
   RelayWorkspaceSession
 } from "@hermes/sync";
@@ -14,25 +18,8 @@ export async function getRelayHealth(relayUrl: string) {
   });
 }
 
-export async function bootstrapRelayWorkspace(
-  relayUrl: string,
-  input: RelayBootstrapRequest
-) {
-  return request<RelayWorkspaceSession>(relayUrl, "/api/relay/bootstrap", {
-    body: JSON.stringify(input),
-    method: "POST"
-  });
-}
-
 export async function connectRelayWorkspace(relayUrl: string, input: RelayConnectRequest) {
   return request<RelayWorkspaceSession>(relayUrl, "/api/relay/connect", {
-    body: JSON.stringify(input),
-    method: "POST"
-  });
-}
-
-export async function joinRelayWorkspace(relayUrl: string, input: RelayJoinRequest) {
-  return request<RelayWorkspaceSession>(relayUrl, "/api/relay/join", {
     body: JSON.stringify(input),
     method: "POST"
   });
@@ -48,6 +35,16 @@ export async function inspectRelayWorkspace(
   });
 }
 
+export async function approveRelayDevice(
+  relayUrl: string,
+  input: RelayApproveDeviceRequest
+) {
+  return request<RelayWorkspaceSession>(relayUrl, "/api/relay/approve-device", {
+    body: JSON.stringify(input),
+    method: "POST"
+  });
+}
+
 export async function revokeRelayDevice(
   relayUrl: string,
   input: RelayRevokeDeviceRequest
@@ -56,6 +53,62 @@ export async function revokeRelayDevice(
     body: JSON.stringify(input),
     method: "POST"
   });
+}
+
+export async function postRelayEvents(relayUrl: string, input: RelayPostEventsRequest) {
+  return request<RelayPostEventsResponse>(relayUrl, "/api/relay/events", {
+    body: JSON.stringify(input),
+    method: "POST"
+  });
+}
+
+export async function getRelayEvents(
+  relayUrl: string,
+  input: {
+    workspaceId: string;
+    deviceId: string;
+    afterSequence?: number;
+  }
+) {
+  const query = new URLSearchParams({
+    workspaceId: input.workspaceId,
+    deviceId: input.deviceId
+  });
+  if (typeof input.afterSequence === "number" && Number.isFinite(input.afterSequence)) {
+    query.set("afterSequence", String(Math.max(0, Math.floor(input.afterSequence))));
+  }
+
+  return request<RelayGetEventsResponse>(relayUrl, `/api/relay/events?${query.toString()}`, {
+    method: "GET"
+  });
+}
+
+export async function postRelaySnapshot(relayUrl: string, input: RelayPostSnapshotRequest) {
+  return request<RelayLatestSnapshotResponse>(relayUrl, "/api/relay/snapshots", {
+    body: JSON.stringify(input),
+    method: "POST"
+  });
+}
+
+export async function getRelayLatestSnapshot(
+  relayUrl: string,
+  input: {
+    workspaceId: string;
+    deviceId: string;
+  }
+) {
+  const query = new URLSearchParams({
+    workspaceId: input.workspaceId,
+    deviceId: input.deviceId
+  });
+
+  return request<RelayLatestSnapshotResponse>(
+    relayUrl,
+    `/api/relay/snapshots/latest?${query.toString()}`,
+    {
+      method: "GET"
+    }
+  );
 }
 
 async function request<T>(
@@ -74,7 +127,7 @@ async function request<T>(
         ...(init.headers ?? {})
       }
     });
-  } catch (error) {
+  } catch {
     throw new Error(
       `Unable to reach relay at ${normalizedRelayUrl}. Make sure it is running, updated, and reachable over Tailscale from this device.`
     );

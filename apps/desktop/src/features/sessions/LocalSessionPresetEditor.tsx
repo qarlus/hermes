@@ -24,14 +24,14 @@ export function LocalSessionPresetEditor({
   return (
     <div className="modal-backdrop" onClick={onClose} role="presentation">
       <section
-        aria-label="Save local path"
+        aria-label="Save path shortcut"
         className="modal-card modal-card--workspace"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="modal-card__header">
           <div>
             <p className="eyebrow">Sessions</p>
-            <h2>Save local path</h2>
+            <h2>Save path shortcut</h2>
           </div>
           <button
             aria-label="Close local path editor"
@@ -45,17 +45,18 @@ export function LocalSessionPresetEditor({
 
         <div className="form-grid">
           <label className="field">
-            <span>Button label</span>
+            <span>Shortcut label</span>
             <input
               autoFocus
               onChange={(event) => onNameChange(event.target.value)}
               placeholder="Hermes repo"
               value={name}
             />
+            <span className="field-hint">Shows up as a one-click button in Sessions.</span>
           </label>
 
           <label className="field">
-            <span>Directory path</span>
+            <span>Folder to open</span>
             <div className="field-row">
               <input
                 onChange={(event) => onPathChange(event.target.value)}
@@ -67,6 +68,9 @@ export function LocalSessionPresetEditor({
                 Browse
               </button>
             </div>
+            <span className="field-hint">
+              Hermes starts a local shell in this folder when you use the shortcut.
+            </span>
           </label>
         </div>
 
@@ -74,7 +78,7 @@ export function LocalSessionPresetEditor({
           <span />
           <button className="primary-button" disabled={saving} onClick={onSave} type="button">
             <FolderPlus size={14} />
-            {saving ? "Saving..." : "Save path"}
+            {saving ? "Saving..." : "Save shortcut"}
           </button>
         </div>
       </section>

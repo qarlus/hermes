@@ -24,9 +24,16 @@ The relay lives in this repo:
 
 - app package: `apps/server`
 - runtime entrypoint: `apps/server/src/index.ts`
-- container build: `apps/server/Dockerfile`
+- bundled runtime entrypoint: `apps/server/dist/index.js`
+- minimal runtime container build: `apps/server/Dockerfile.runtime`
+- full repo build container: `apps/server/Dockerfile`
 
-The desktop install flow currently clones this repository and builds the relay container from `apps/server/Dockerfile`.
+The desktop install flow now downloads only the minimal runtime package from this repo:
+
+- `apps/server/dist/index.js`
+- `apps/server/Dockerfile.runtime`
+
+It does not clone the monorepo onto the relay host anymore.
 
 ## Local development
 
@@ -61,10 +68,10 @@ bun run --filter @hermes/server start
 
 ## Docker
 
-Build from the repo root:
+Minimal runtime build:
 
 ```bash
-docker build -f apps/server/Dockerfile -t hermes-relay:latest .
+docker build -f apps/server/Dockerfile.runtime -t hermes-relay:latest apps/server/dist
 ```
 
 Run:
@@ -78,6 +85,12 @@ docker run -d \
   -e HERMES_RELAY_DATA=/data/relay.json \
   -v hermes-relay-data:/data \
   hermes-relay:latest
+```
+
+If you are developing the relay locally, refresh the bundled runtime first:
+
+```bash
+bun run --filter @hermes/server build
 ```
 
 ## Recommended deployment

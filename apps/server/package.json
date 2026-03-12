@@ -7,6 +7,7 @@
     "@hermes/sync": "workspace:*"
   },
   "scripts": {
+    "build": "bun build src/index.ts --target=node --outfile=dist/index.js",
     "start": "bun run src/index.ts",
     "typecheck": "tsc --project tsconfig.json --noEmit"
   }

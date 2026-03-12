@@ -2,22 +2,16 @@ import { useRef, type ChangeEvent } from "react";
 import {
   Download,
   HardDriveDownload,
-  Link2,
   MonitorCog,
   Palette,
-  RefreshCw,
-  ServerCog,
-  Shield,
   TerminalSquare,
   Upload
 } from "lucide-react";
-import { buildSshTarget, serverDisplayLabel, type ServerRecord } from "@hermes/core";
 import type {
   DevicePlatform,
   HermesSettings,
   HermesThemeDefinition,
   HermesThemeId,
-  RelayClientState,
   TerminalLaunchProfile,
   TerminalLaunchProfileId
 } from "../../lib/settings";
@@ -26,31 +20,32 @@ import { getDevicePlatformLabel, getHermesThemes } from "../../lib/settings";
 type SettingsPageProps = {
   platform: DevicePlatform;
   settings: HermesSettings;
-  relayState: RelayClientState;
-  servers: ServerRecord[];
   activeTheme: HermesThemeDefinition;
   terminalProfiles: TerminalLaunchProfile[];
   launcherSummary: string;
   commandCount: number;
+  syncedKeyCount: number;
   localPresetCount: number;
   pinnedRepositoryCount: number;
+  tmuxMetadataCount: number;
+  sessionHistoryCount: number;
   workspaceCount: number;
   serverCount: number;
   syncBusyAction: "export" | "import" | null;
-  relayBusyAction: "refresh" | "revoke" | "health" | "inspect" | null;
   onThemeChange: (themeId: HermesThemeId) => void;
   onTerminalFontSizeChange: (value: number) => void;
   onTerminalProfileChange: (profileId: TerminalLaunchProfileId) => void;
   onCustomTerminalProgramChange: (value: string) => void;
   onCustomTerminalArgsChange: (value: string) => void;
   onCustomTerminalLabelChange: (value: string) => void;
+  onSyncIncludesSettingsChange: (value: boolean) => void;
+  onSyncIncludesSecretsChange: (value: boolean) => void;
+  onSyncIncludesTmuxMetadataChange: (value: boolean) => void;
+  onSyncIncludesHistoryChange: (value: boolean) => void;
   onSyncIncludesCommandsChange: (value: boolean) => void;
   onSyncIncludesPinnedRepositoriesChange: (value: boolean) => void;
   onExportBundle: () => void;
   onImportBundle: (file: File) => void;
-  onOpenRelaySetup: () => void;
-  onRefreshRelayWorkspace: () => void;
-  onRevokeRelayDevice: (deviceId: string) => void;
 };
 
 const TERMINAL_SAMPLE = [
@@ -63,38 +58,36 @@ const TERMINAL_SAMPLE = [
 export function SettingsPage({
   platform,
   settings,
-  relayState,
-  servers,
   activeTheme,
   terminalProfiles,
   launcherSummary,
   commandCount,
+  syncedKeyCount,
   localPresetCount,
   pinnedRepositoryCount,
+  tmuxMetadataCount,
+  sessionHistoryCount,
   workspaceCount,
   serverCount,
   syncBusyAction,
-  relayBusyAction,
   onThemeChange,
   onTerminalFontSizeChange,
   onTerminalProfileChange,
   onCustomTerminalProgramChange,
   onCustomTerminalArgsChange,
   onCustomTerminalLabelChange,
+  onSyncIncludesSettingsChange,
+  onSyncIncludesSecretsChange,
+  onSyncIncludesTmuxMetadataChange,
+  onSyncIncludesHistoryChange,
   onSyncIncludesCommandsChange,
   onSyncIncludesPinnedRepositoriesChange,
   onExportBundle,
-  onImportBundle,
-  onOpenRelaySetup,
-  onRefreshRelayWorkspace,
-  onRevokeRelayDevice
+  onImportBundle
 }: SettingsPageProps) {
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const themes = getHermesThemes();
   const usesCustomLauncher = settings.terminalProfileId === "custom";
-  const selectedRelayServer = servers.find((server) => server.id === relayState.hostServerId) ?? null;
-  const isRelayLinked = Boolean(relayState.currentDeviceId);
-  const isRelayMaster = relayState.currentDeviceRole === "master";
 
   const handleImportChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -110,20 +103,6 @@ export function SettingsPage({
     <section className="settings-page">
       <div className="settings-status-bar">
         <span className="settings-pill">
-          <Shield size={13} />
-          Hermes status
-        </span>
-        <span className="settings-pill">
-          <Link2 size={13} />
-          Relay {isRelayLinked ? "linked" : "not linked"}
-        </span>
-        {relayState.currentDeviceRole ? (
-          <span className="settings-pill">
-            <ServerCog size={13} />
-            {relayState.currentDeviceRole === "master" ? "Master device" : "Member device"}
-          </span>
-        ) : null}
-        <span className="settings-pill">
           <Palette size={13} />
           {activeTheme.label}
         </span>
@@ -134,97 +113,6 @@ export function SettingsPage({
       </div>
 
       <div className="settings-grid">
-        <article className="settings-card settings-card--dense">
-          <div className="settings-card__header">
-            <div>
-              <p className="eyebrow">Sync & Devices</p>
-              <h3>Relay summary</h3>
-            </div>
-            <span className="settings-pill">
-              <ServerCog size={13} />
-              {getDevicePlatformLabel(platform)}
-            </span>
-          </div>
-
-          <div className="settings-summary-grid">
-            <div className="settings-summary-tile">
-              <span>Relay host</span>
-              <strong>
-                {selectedRelayServer
-                  ? serverDisplayLabel(selectedRelayServer)
-                  : "No relay host selected"}
-              </strong>
-              <small>
-                {selectedRelayServer ? buildSshTarget(selectedRelayServer) : "Choose a saved server to provision and manage the relay."}
-              </small>
-            </div>
-            <div className="settings-summary-tile">
-              <span>This device</span>
-              <strong>{relayState.deviceName || `Hermes ${getDevicePlatformLabel(platform)}`}</strong>
-              <small>{relayState.currentDeviceRole ? `${relayState.currentDeviceRole} device` : "Not linked yet"}</small>
-            </div>
-            <div className="settings-summary-tile">
-              <span>Linked devices</span>
-              <strong>{relayState.devices.filter((device) => !device.revokedAt).length}</strong>
-              <small>{relayState.devices.length === 0 ? "No devices linked yet" : `${relayState.devices.length} total records`}</small>
-            </div>
-            <div className="settings-summary-tile">
-              <span>Connection</span>
-              <strong>
-                {relayState.relayHealthy
-                  ? "Relay healthy"
-                  : relayState.hostServerId
-                    ? "Waiting for relay"
-                    : "Not configured"}
-              </strong>
-              <small>
-                {relayState.detectedRelayUrl ??
-                  "Connect a server as the relay host and Hermes will link this device automatically."}
-              </small>
-            </div>
-          </div>
-
-          <div className="settings-card__actions">
-            <button className="primary-button" onClick={onOpenRelaySetup} type="button">
-              <ServerCog size={14} />
-              Manage relay
-            </button>
-            <button
-              className="ghost-button"
-              disabled={!isRelayLinked || relayBusyAction !== null}
-              onClick={onRefreshRelayWorkspace}
-              type="button"
-            >
-              <RefreshCw size={14} />
-              {relayBusyAction === "refresh" ? "Refreshing..." : "Refresh status"}
-            </button>
-          </div>
-
-          {relayState.devices.length > 0 ? (
-            <div className="settings-device-list">
-              {relayState.devices.map((device) => (
-                <div className="settings-device-row" key={device.id}>
-                  <div className="settings-device-row__body">
-                    <strong>
-                      {device.name}
-                      {device.id === relayState.currentDeviceId ? " (this device)" : ""}
-                    </strong>
-                    <span>
-                      {getDevicePlatformLabel(device.platform)} / {device.role}
-                      {device.revokedAt ? " / revoked" : ""}
-                    </span>
-                  </div>
-                  {isRelayMaster && device.id !== relayState.currentDeviceId && !device.revokedAt ? (
-                    <button className="ghost-button" disabled={relayBusyAction !== null} onClick={() => onRevokeRelayDevice(device.id)} type="button">
-                      {relayBusyAction === "revoke" ? "Revoking..." : "Revoke"}
-                    </button>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-          ) : null}
-        </article>
-
         <article className="settings-card settings-card--dense">
           <div className="settings-card__header">
             <div>
@@ -361,6 +249,22 @@ export function SettingsPage({
             </div>
 
             <div className="settings-switches">
+              <label className="settings-switch">
+                <input checked={settings.syncIncludesSettings} onChange={(event) => onSyncIncludesSettingsChange(event.target.checked)} type="checkbox" />
+                <span>Include app settings</span>
+              </label>
+              <label className="settings-switch">
+                <input checked={settings.syncIncludesSecrets} onChange={(event) => onSyncIncludesSecretsChange(event.target.checked)} type="checkbox" />
+                <span>Include synced SSH keys and credentials ({syncedKeyCount})</span>
+              </label>
+              <label className="settings-switch">
+                <input checked={settings.syncIncludesTmuxMetadata} onChange={(event) => onSyncIncludesTmuxMetadataChange(event.target.checked)} type="checkbox" />
+                <span>Include tmux metadata ({tmuxMetadataCount})</span>
+              </label>
+              <label className="settings-switch">
+                <input checked={settings.syncIncludesHistory} onChange={(event) => onSyncIncludesHistoryChange(event.target.checked)} type="checkbox" />
+                <span>Include terminal history ({sessionHistoryCount})</span>
+              </label>
               <label className="settings-switch">
                 <input checked={settings.syncIncludesCommands} onChange={(event) => onSyncIncludesCommandsChange(event.target.checked)} type="checkbox" />
                 <span>Include saved terminal commands ({commandCount})</span>
