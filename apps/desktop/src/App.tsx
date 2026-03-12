@@ -1,16 +1,26 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowUpCircle,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentType,
+  type MouseEvent as ReactMouseEvent
+} from "react";
+import {
+  ArrowCircleUp,
+  ArrowClockwise,
   Copy,
+  DesktopTower,
   FolderPlus,
-  Github,
-  KeyRound,
+  GearSix,
+  GithubLogo,
+  Key,
   Laptop,
-  RefreshCcw,
-  Server,
-  Settings2,
-  TerminalSquare
-} from "lucide-react";
+  MagnifyingGlass,
+  Plus,
+  TerminalWindow
+} from "@phosphor-icons/react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   buildSshTarget,
@@ -68,6 +78,7 @@ import {
   getCliToolUpdate,
   getKeychainPublicKey,
   inspectRelayHost,
+  hasRelayWorkspaceKey,
   inspectGitRepository,
   listGitHubRepositories,
   listKeychainItems,
@@ -96,9 +107,11 @@ import {
 } from "@hermes/db";
 import type { RelayWorkspaceSession } from "@hermes/sync";
 import { AppDialogs } from "./components/AppDialogs";
-import { AppHeader } from "./components/AppHeader";
 import { AppRail } from "./components/AppRail";
+import { AppShell } from "./components/AppShell";
 import { AppStage } from "./components/AppStage";
+import type { ShellLayoutMode } from "./components/PageFrame";
+import { ShellTopbar } from "./components/ShellTopbar";
 import type { GitRepositoryView, GitToolbarContext } from "./features/git/GitPage";
 import { RelaySetupDialog } from "./features/settings/RelaySetupDialog";
 import { LocalSessionPresetEditor } from "./features/sessions/LocalSessionPresetEditor";
@@ -148,6 +161,7 @@ import {
   getRelayEvents,
   getRelayLatestSnapshot,
   getRelayHealth,
+  inspectRelayWorkspace,
   postRelayEvents,
   postRelaySnapshot,
   normalizeRelayUrl,
@@ -316,7 +330,7 @@ export function App() {
   const [relayInstallMessage, setRelayInstallMessage] = useState<string | null>(null);
   const [relayConflictState, setRelayConflictState] = useState<RelayConflictState | null>(null);
   const [relayBusyAction, setRelayBusyAction] = useState<
-    "refresh" | "revoke" | "health" | "inspect" | "approve" | null
+    "refresh" | "revoke" | "health" | "inspect" | "approve" | "relink" | null
   >(null);
   const [syncBusyAction, setSyncBusyAction] = useState<"export" | "import" | null>(null);
   const [toasts, setToasts] = useState<ToastRecord[]>([]);
@@ -536,6 +550,10 @@ export function App() {
     [filteredGitRepositories, gitRepositories, selectedGitRepositoryId]
   );
   const activeTheme = useMemo(() => getHermesTheme(settings.themeId), [settings.themeId]);
+  const relayConnected = useMemo(
+    () => relayState.relayHealthy && relayState.currentDeviceStatus === "approved",
+    [relayState.currentDeviceStatus, relayState.relayHealthy]
+  );
   const terminalProfiles = useMemo(
     () => getTerminalLaunchProfiles(devicePlatform),
     [devicePlatform]
@@ -1764,6 +1782,37 @@ export function App() {
     }));
   };
 
+  const finalizeRelaySession = async (
+    session: RelayWorkspaceSession,
+    relayUrl: string,
+    options?: {
+      synchronize?: boolean;
+    }
+  ) => {
+    if (session.currentDeviceStatus === "approved" && !session.wrappedWorkspaceKey) {
+      const hasLocalWorkspaceKey = await hasRelayWorkspaceKey(session.workspace.id).catch(() => false);
+      applyRelaySession(session, relayUrl);
+      throw new Error(
+        hasLocalWorkspaceKey
+          ? "Relay is missing this device's wrapped workspace key. Hermes refreshed the relay state, but the relay still needs this device's workspace-key wrap."
+          : "Relay approved this device, but this device no longer has the local workspace key needed to repair the relay. Use another approved device to re-link it, or reset relay data if this is the only device and the current relay state can be discarded."
+      );
+    }
+
+    if (session.wrappedWorkspaceKey) {
+      await unwrapRelayWorkspaceKey(
+        session.workspace.id,
+        relayState.localDeviceId,
+        session.wrappedWorkspaceKey
+      );
+    }
+
+    applyRelaySession(session, relayUrl);
+    if (options?.synchronize !== false && session.currentDeviceStatus === "approved") {
+      await synchronizeRelayWorkspace(relayUrl, session);
+    }
+  };
+
   const getRelayCandidateUrls = (urls: Array<string | null | undefined>) => {
     const seen = new Set<string>();
     return urls
@@ -2536,7 +2585,9 @@ export function App() {
     const workspaceId = relayState.workspaceId ?? crypto.randomUUID();
     const workspaceName = relayState.workspaceName.trim() || "Hermes";
     const bootstrapWorkspace = !relayState.workspaceId;
-    const workspaceBootstrap = bootstrapWorkspace
+    const shouldRepairSelfWrap =
+      !bootstrapWorkspace && (await hasRelayWorkspaceKey(workspaceId));
+    const workspaceBootstrap = bootstrapWorkspace || shouldRepairSelfWrap
       ? {
           workspaceId,
           workspaceName,
@@ -2556,22 +2607,7 @@ export function App() {
       workspaceBootstrap
     });
 
-    if (session.currentDeviceStatus === "approved" && !session.wrappedWorkspaceKey) {
-      throw new Error("Relay approved this device but did not return a wrapped workspace key.");
-    }
-
-    if (session.wrappedWorkspaceKey) {
-      await unwrapRelayWorkspaceKey(
-        session.workspace.id,
-        relayState.localDeviceId,
-        session.wrappedWorkspaceKey
-      );
-    }
-
-    applyRelaySession(session, relayUrl);
-    if (session.currentDeviceStatus === "approved") {
-      await synchronizeRelayWorkspace(relayUrl, session);
-    }
+    await finalizeRelaySession(session, relayUrl);
 
     return {
       autoBootstrapped:
@@ -2596,6 +2632,59 @@ export function App() {
         return {
           ...result,
           relayUrl: candidateUrl
+        };
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    throw lastError ?? new Error("No relay endpoint was available.");
+  };
+
+  const inspectRelayWithCandidates = async (candidateUrls: string[]) => {
+    if (!relayState.workspaceId || !relayState.currentDeviceId) {
+      return connectRelayWithCandidates(candidateUrls);
+    }
+
+    let lastError: unknown = null;
+
+    for (const candidateUrl of candidateUrls) {
+      try {
+        const health = await getRelayHealth(candidateUrl);
+        updateRelayState((current) => ({
+          ...current,
+          relayId: health.relayId,
+          lastError: null
+        }));
+
+        const session = await inspectRelayWorkspace(candidateUrl, {
+          workspaceId: relayState.workspaceId,
+          deviceId: relayState.currentDeviceId,
+          adminToken: relayState.adminToken
+        });
+
+        const hasLocalWorkspaceKey =
+          session.currentDeviceStatus === "approved" && !session.wrappedWorkspaceKey
+            ? await hasRelayWorkspaceKey(session.workspace.id).catch(() => false)
+            : false;
+
+        if (hasLocalWorkspaceKey) {
+          return connectRelayAtUrl(candidateUrl).then((result) => ({
+            ...result,
+            relayUrl: candidateUrl
+          }));
+        }
+
+        await finalizeRelaySession(session, candidateUrl, { synchronize: false });
+        updateRelayState((current) => ({
+          ...current,
+          advancedRelayUrl: candidateUrl
+        }));
+        return {
+          autoBootstrapped: false,
+          health,
+          relayUrl: candidateUrl,
+          session
         };
       } catch (error) {
         lastError = error;
@@ -2879,7 +2968,7 @@ export function App() {
     setRelayInstallState("checking");
     setRelayInstallMessage("Refreshing the linked device state from the relay.");
     try {
-      await connectRelayWithCandidates(candidateUrls);
+      await inspectRelayWithCandidates(candidateUrls);
       setRelayInstallState("ready");
       setRelayInstallMessage("Relay device state refreshed.");
       pushToast("Refreshed relay workspace state.", "success");
@@ -2949,6 +3038,12 @@ export function App() {
 
     setRelayBusyAction("approve");
     try {
+      const hasLocalWorkspaceKey = await hasRelayWorkspaceKey(relayState.workspaceId);
+      if (!hasLocalWorkspaceKey) {
+        throw new Error(
+          "This admin device no longer has the local workspace key needed to approve or re-link other devices."
+        );
+      }
       const wrappedWorkspaceKey = await wrapRelayWorkspaceKeyForDevice(
         relayState.workspaceId,
         relayState.currentDeviceId ?? relayState.localDeviceId,
@@ -2963,6 +3058,48 @@ export function App() {
       });
       applyRelaySession(session, relayUrls.primary);
       pushToast(`Approved ${pendingDevice.name}.`, "success");
+    } catch (error) {
+      handleRelayError(error);
+    } finally {
+      setRelayBusyAction(null);
+    }
+  };
+
+  const handleRelinkRelayDevice = async (deviceId: string) => {
+    if (!relayState.workspaceId || !relayState.adminToken || relayState.currentDeviceRole !== "master") {
+      pushToast("Only the relay master device can re-link approved devices.", "info");
+      return;
+    }
+
+    const targetDevice = relayState.devices.find((device) => device.id === deviceId);
+    if (!targetDevice || targetDevice.status !== "approved") {
+      pushToast("This relay device must already be approved before it can be re-linked.", "info");
+      return;
+    }
+
+    setRelayBusyAction("relink");
+    try {
+      const hasLocalWorkspaceKey = await hasRelayWorkspaceKey(relayState.workspaceId);
+      if (!hasLocalWorkspaceKey) {
+        throw new Error(
+          "This admin device no longer has the local workspace key needed to approve or re-link other devices."
+        );
+      }
+
+      const wrappedWorkspaceKey = await wrapRelayWorkspaceKeyForDevice(
+        relayState.workspaceId,
+        relayState.currentDeviceId ?? relayState.localDeviceId,
+        targetDevice.id,
+        targetDevice.publicKeys.encryptionPublicKey
+      );
+      const session = await approveRelayDevice(normalizeRelayUrl(relayUrls.primary), {
+        workspaceId: relayState.workspaceId,
+        adminToken: relayState.adminToken,
+        pendingDeviceId: targetDevice.id,
+        wrappedWorkspaceKey
+      });
+      applyRelaySession(session, relayUrls.primary);
+      pushToast(`Re-linked ${targetDevice.name}.`, "success");
     } catch (error) {
       handleRelayError(error);
     } finally {
@@ -3849,7 +3986,7 @@ export function App() {
         ? "Settings"
       : view === "keychain"
         ? "Keychain"
-        : "Dashboard";
+        : "Home";
 
   const headerSubtitle =
     view === "sessions" && activeSessionTabServer
@@ -3899,10 +4036,161 @@ export function App() {
   });
 
   const isGitDetailView = view === "git" && Boolean(gitToolbarContext.onBack);
+  const shellLayoutMode: ShellLayoutMode =
+    view === "dashboard"
+      ? "home"
+      : view === "sessions" || view === "git" || view === "files"
+        ? "full"
+        : view === "workspace"
+          ? "wide"
+          : "standard";
+
+  const headerActions =
+    view === "dashboard" ? (
+      <div className="shell-action-group shell-action-group--home">
+        <label className="shell-search shell-search--command">
+          <MagnifyingGlass size={14} weight="bold" />
+          <span className="shell-search__hint">/</span>
+          <input
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Connect, search, or jump"
+            value={search}
+          />
+        </label>
+        <button
+          aria-label="New workspace"
+          className="shell-icon-button"
+          onClick={openCreateProject}
+          title="New workspace"
+          type="button"
+        >
+          <Plus size={15} weight="bold" />
+        </button>
+      </div>
+    ) : view === "sessions" ? (
+      <div className="shell-action-group">
+        <ShellAction
+          icon={Laptop}
+          label="Local device"
+          onClick={() => void handleConnectLocal()}
+          tone="primary"
+        />
+        <ShellAction
+          icon={DesktopTower}
+          label="Saved server"
+          onClick={() => setSessionLauncherOpen(true)}
+        />
+        <ShellAction icon={FolderPlus} label="Save path" onClick={openLocalSessionPresetEditor} />
+        <ShellAction icon={ArrowCircleUp} label="Updates" onClick={openToolUpdates} />
+      </div>
+    ) : view === "workspace" ? (
+      <div className="shell-action-group">
+        <ShellAction icon={DesktopTower} label="New server" onClick={openCreateServer} tone="primary" />
+        <ShellAction icon={TerminalWindow} label="Sessions" onClick={() => setView("sessions")} />
+        <ShellAction
+          disabled={!selectedProject}
+          icon={GearSix}
+          label="Edit workspace"
+          onClick={openEditProject}
+        />
+        <ShellAction icon={FolderPlus} label="New workspace" onClick={openCreateProject} />
+      </div>
+    ) : view === "keychain" ? (
+      <div className="shell-action-group">
+        <label className="shell-search">
+          <MagnifyingGlass size={14} weight="bold" />
+          <input
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Find credential"
+            value={search}
+          />
+        </label>
+        <ShellAction icon={Key} label="Add credential" onClick={openCreateKeychainItem} tone="primary" />
+        <ShellAction icon={Key} label="Create SSH key" onClick={() => void openCreateLocalSshKey()} />
+      </div>
+    ) : view === "git" ? (
+      <div className="shell-action-group">
+        {!isGitDetailView ? (
+          <>
+            <ShellAction
+              icon={FolderPlus}
+              label="Pin checkout"
+              onClick={() => void handleAddGitRepository()}
+              tone="primary"
+            />
+            <ShellAction
+              disabled={gitLoading}
+              icon={ArrowClockwise}
+              label="Refresh local"
+              onClick={() => void refreshGitRepositories()}
+            />
+          </>
+        ) : null}
+        {gitToolbarContext.shellRepositoryId ? (
+          <ShellAction
+            disabled={gitBusyAction === `shell:${gitToolbarContext.shellRepositoryId}`}
+            icon={TerminalWindow}
+            label={
+              gitBusyAction === `shell:${gitToolbarContext.shellRepositoryId}` ? "Opening..." : "Open shell"
+            }
+            onClick={() => void handleOpenGitRepositoryShell(gitToolbarContext.shellRepositoryId!)}
+          />
+        ) : null}
+        {gitToolbarContext.reviewRepositoryId ? (
+          <ShellAction
+            icon={Copy}
+            label="Copy review"
+            onClick={() => void handleCopyGitReviewDraft(gitToolbarContext.reviewRepositoryId!)}
+          />
+        ) : null}
+        {gitToolbarContext.cloneUrl ? (
+          <ShellAction
+            icon={Copy}
+            label="Copy clone URL"
+            onClick={() => void handleCopyGitHubCloneUrl(gitToolbarContext.cloneUrl!)}
+          />
+        ) : null}
+        {gitHubSession ? (
+          <>
+            <ShellAction
+              disabled={gitHubLoading || gitHubRepositoryLoading}
+              icon={ArrowClockwise}
+              label="Refresh GitHub"
+              onClick={() => void loadGitHubOwnedRepositories()}
+            />
+            <ShellAction
+              icon={GithubLogo}
+              label="Disconnect GitHub"
+              onClick={() => void handleDisconnectGitHub()}
+            />
+          </>
+        ) : (
+          <ShellAction
+            icon={GithubLogo}
+            label="Connect GitHub"
+            onClick={() => setGitHubSetupRequest((current) => current + 1)}
+          />
+        )}
+      </div>
+    ) : null;
+
+  function handleShellContextMenu(event: ReactMouseEvent<HTMLElement>) {
+    const target = event.target as HTMLElement | null;
+    if (
+      target?.closest(
+        'input, textarea, select, [contenteditable="true"], [data-allow-native-context-menu="true"]'
+      )
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+  }
 
   return (
     <main
-      className="app-shell"
+      className="app-root"
+      onContextMenuCapture={handleShellContextMenu}
       style={{
         colorScheme: activeTheme.colorScheme,
         ["--bg" as string]: activeTheme.app.bg,
@@ -3922,238 +4210,21 @@ export function App() {
         ["--danger" as string]: activeTheme.app.danger
       }}
     >
-      <AppRail onNavigate={handleNavigate} view={view} />
-
-      <section className="main-panel main-panel--full">
-        <AppHeader
-          canEditWorkspace={Boolean(selectedProject)}
-          compact={isGitDetailView}
-          eyebrow={view === "git" ? gitToolbarContext.headerEyebrow ?? undefined : undefined}
-          backLabel="Repositories"
-          meta={view === "git" ? gitToolbarContext.headerMeta : undefined}
-          onBack={view === "git" ? gitToolbarContext.onBack ?? undefined : undefined}
-          onBackToDashboard={() => {
-            if (view === "workspace" && workspaceMode === "terminal") {
-              setWorkspaceMode("home");
-              return;
-            }
-
-            setView("dashboard");
-          }}
-          onCreateWorkspace={openCreateProject}
-          onEditWorkspace={openEditProject}
-          onSearchChange={setSearch}
-          search={search}
-          subtitle={headerSubtitle}
-          title={headerTitle}
-          view={view}
-        />
-
-        {view === "sessions" ? (
-          <div className="main-panel__quick-actions">
-            <div className="main-panel__quick-actions-row">
-              <button
-                className="quick-action-chip quick-action-chip--primary"
-                onClick={() => void handleConnectLocal()}
-                type="button"
-              >
-                <Laptop size={14} />
-                Local device
-              </button>
-              <button
-                className="quick-action-chip"
-                onClick={() => setSessionLauncherOpen(true)}
-                type="button"
-              >
-                <Server size={14} />
-                Saved server
-              </button>
-              <button
-                className="quick-action-chip"
-                onClick={openLocalSessionPresetEditor}
-                type="button"
-              >
-                <FolderPlus size={14} />
-                Save path shortcut
-              </button>
-              <button className="quick-action-chip" onClick={openToolUpdates} type="button">
-                <ArrowUpCircle size={14} />
-                Tool updates
-              </button>
-            </div>
-            {localSessionPresets.length > 0 ? (
-              <div className="main-panel__quick-actions-row main-panel__quick-actions-row--presets">
-                {localSessionPresets.map((preset) => (
-                  <div className="session-preset-chip" key={preset.id}>
-                    <button
-                      className="session-preset-chip__launch"
-                      onClick={() => void handleLaunchLocalPreset(preset.id)}
-                      type="button"
-                    >
-                      {preset.name}
-                    </button>
-                    <button
-                      aria-label={`Remove ${preset.name}`}
-                      className="session-preset-chip__remove"
-                      onClick={() => handleRemoveLocalPreset(preset.id)}
-                      type="button"
-                    >
-                      x
-                    </button>
-                  </div>
-                ))}
-              </div>
-            ) : null}
-          </div>
-        ) : view === "workspace" ? (
-          <div className="main-panel__quick-actions">
-            <div className="main-panel__quick-actions-row">
-              <button
-                className="quick-action-chip quick-action-chip--primary"
-                onClick={openCreateServer}
-                type="button"
-              >
-                <Server size={14} />
-                New server
-              </button>
-              <button className="quick-action-chip" onClick={() => setView("sessions")} type="button">
-                <TerminalSquare size={14} />
-                Sessions
-              </button>
-              <button
-                className="quick-action-chip"
-                disabled={!selectedProject}
-                onClick={openEditProject}
-                type="button"
-              >
-                <Settings2 size={14} />
-                Edit workspace
-              </button>
-              <button className="quick-action-chip" onClick={openCreateProject} type="button">
-                <FolderPlus size={14} />
-                New workspace
-              </button>
-            </div>
-          </div>
-        ) : view === "keychain" ? (
-          <div className="main-panel__quick-actions">
-            <div className="main-panel__quick-actions-row">
-              <button className="quick-action-chip quick-action-chip--primary" onClick={openCreateKeychainItem} type="button">
-                <KeyRound size={14} />
-                Add credential
-              </button>
-              <button className="quick-action-chip" onClick={() => void openCreateLocalSshKey()} type="button">
-                <KeyRound size={14} />
-                Create SSH key
-              </button>
-            </div>
-          </div>
-        ) : view === "git" ? (
-          <div className={`main-panel__quick-actions ${isGitDetailView ? "main-panel__quick-actions--compact" : ""}`}>
-            <div className="main-panel__quick-actions-row">
-              {!isGitDetailView ? (
-                <>
-                  <button
-                    className="quick-action-chip quick-action-chip--primary"
-                    onClick={() => void handleAddGitRepository()}
-                    type="button"
-                  >
-                    <FolderPlus size={14} />
-                    Pin checkout
-                  </button>
-                  <button
-                    className="quick-action-chip"
-                    disabled={gitLoading}
-                    onClick={() => void refreshGitRepositories()}
-                    type="button"
-                  >
-                    <RefreshCcw size={14} />
-                    Refresh local
-                  </button>
-                </>
-              ) : null}
-              {gitToolbarContext.shellRepositoryId ? (
-                <button
-                  className={`quick-action-chip ${isGitDetailView ? "quick-action-chip--icon-only" : ""}`}
-                  disabled={gitBusyAction === `shell:${gitToolbarContext.shellRepositoryId}`}
-                  onClick={() => void handleOpenGitRepositoryShell(gitToolbarContext.shellRepositoryId!)}
-                  title="Open shell"
-                  type="button"
-                >
-                  <TerminalSquare size={14} />
-                  {isGitDetailView ? null : gitBusyAction === `shell:${gitToolbarContext.shellRepositoryId}` ? "Opening..." : "Open shell"}
-                </button>
-              ) : null}
-              {gitToolbarContext.reviewRepositoryId ? (
-                <button
-                  className={`quick-action-chip ${isGitDetailView ? "quick-action-chip--icon-only" : ""}`}
-                  onClick={() => void handleCopyGitReviewDraft(gitToolbarContext.reviewRepositoryId!)}
-                  title="Copy review"
-                  type="button"
-                >
-                  <Copy size={14} />
-                  {isGitDetailView ? null : "Copy review"}
-                </button>
-              ) : null}
-              {gitToolbarContext.cloneUrl ? (
-                <button
-                  className={`quick-action-chip ${isGitDetailView ? "quick-action-chip--icon-only" : ""}`}
-                  onClick={() => void handleCopyGitHubCloneUrl(gitToolbarContext.cloneUrl!)}
-                  title="Copy clone URL"
-                  type="button"
-                >
-                  <Copy size={14} />
-                  {isGitDetailView ? null : "Copy clone URL"}
-                </button>
-              ) : null}
-              {isGitDetailView ? (
-                <button
-                  className="quick-action-chip quick-action-chip--icon-only"
-                  disabled={gitLoading}
-                  onClick={() => void refreshGitRepositories()}
-                  title="Refresh local"
-                  type="button"
-                >
-                  <RefreshCcw size={14} />
-                </button>
-              ) : null}
-              {gitHubSession ? (
-                <>
-                  <button
-                    className={`quick-action-chip ${isGitDetailView ? "quick-action-chip--icon-only" : ""}`}
-                    disabled={gitHubLoading || gitHubRepositoryLoading}
-                    onClick={() => void loadGitHubOwnedRepositories()}
-                    title="Refresh GitHub"
-                    type="button"
-                  >
-                    <RefreshCcw size={14} />
-                    {isGitDetailView ? null : "Refresh GitHub"}
-                  </button>
-                  <button
-                    className={`quick-action-chip ${isGitDetailView ? "quick-action-chip--icon-only" : ""}`}
-                    onClick={() => void handleDisconnectGitHub()}
-                    title="Disconnect GitHub"
-                    type="button"
-                  >
-                    <Github size={14} />
-                    {isGitDetailView ? null : "Disconnect GitHub"}
-                  </button>
-                </>
-              ) : (
-                <button
-                  className={`quick-action-chip ${isGitDetailView ? "quick-action-chip--icon-only" : ""}`}
-                  onClick={() => setGitHubSetupRequest((current) => current + 1)}
-                  title="Connect GitHub"
-                  type="button"
-                >
-                  <Github size={14} />
-                  {isGitDetailView ? null : "Connect GitHub"}
-                </button>
-              )}
-            </div>
-          </div>
-        ) : null}
-
+      <AppShell
+        topbar={
+          <ShellTopbar
+            actions={headerActions}
+            backLabel="Repositories"
+            meta={view === "git" ? gitToolbarContext.headerMeta : undefined}
+            mode={shellLayoutMode}
+            onBack={view === "git" ? gitToolbarContext.onBack ?? undefined : undefined}
+            subtitle={view === "dashboard" ? undefined : headerSubtitle}
+            title={headerTitle}
+          />
+        }
+        layoutMode={shellLayoutMode}
+        rail={<AppRail onNavigate={handleNavigate} view={view} />}
+      >
         <AppStage
           activeTabId={view === "sessions" ? activeSessionTab?.id ?? null : activeTabId}
           activeTheme={activeTheme}
@@ -4178,6 +4249,7 @@ export function App() {
           gitHubSession={gitHubSession}
           gitLoading={gitLoading}
           localLauncherSummary={localLauncherSummary}
+          relayConnected={relayConnected}
           onAddGitRepository={() => void handleAddGitRepository()}
           onCheckoutGitBranch={(repositoryId, branchName) =>
             void handleCheckoutGitBranch(repositoryId, branchName)
@@ -4231,6 +4303,7 @@ export function App() {
           onDisconnectGitHub={() => void handleDisconnectGitHub()}
           onSignInGitHubWithToken={(token) => void handleSignInGitHubWithToken(token)}
           onNewTab={view === "sessions" ? () => setSessionLauncherOpen(true) : undefined}
+          onNotify={pushToast}
           onOpenGitRepositoryShell={(repositoryId) => void handleOpenGitRepositoryShell(repositoryId)}
           localSessionPresets={localSessionPresets}
           onLaunchLocalPreset={(presetId) => void handleLaunchLocalPreset(presetId)}
@@ -4341,7 +4414,7 @@ export function App() {
           workspaceMode={workspaceMode}
           workspaceTabs={workspaceTabs}
         />
-      </section>
+      </AppShell>
 
       <AppDialogs
         editingKeychainItem={editingKeychainItem}
@@ -4435,6 +4508,7 @@ export function App() {
           onInspectRelayHost={() => void handleInspectRelayHost()}
           onOpenRelayInstallSession={() => void handleInstallRelayOnHost()}
           onRefreshRelayWorkspace={() => void handleRefreshRelayWorkspace()}
+          onRelinkRelayDevice={(deviceId) => void handleRelinkRelayDevice(deviceId)}
           onResolveRelayConflict={(strategy) => void resolveRelayConflict(strategy)}
           onRelayInstallRuntimeChange={(value) =>
             updateRelayState((current) => ({
@@ -4472,6 +4546,39 @@ export function App() {
         </div>
       ) : null}
     </main>
+  );
+}
+
+type ShellActionIcon = ComponentType<{
+  size?: number;
+  weight?: "bold" | "duotone" | "fill" | "light" | "regular" | "thin";
+}>;
+
+type ShellActionProps = {
+  disabled?: boolean;
+  icon: ShellActionIcon;
+  label: string;
+  onClick: () => void;
+  tone?: "default" | "primary";
+};
+
+function ShellAction({
+  disabled = false,
+  icon: Icon,
+  label,
+  onClick,
+  tone = "default"
+}: ShellActionProps) {
+  return (
+    <button
+      className={`shell-action ${tone === "primary" ? "shell-action--primary" : ""}`}
+      disabled={disabled}
+      onClick={onClick}
+      type="button"
+    >
+      <Icon size={14} weight={tone === "primary" ? "bold" : "regular"} />
+      <span>{label}</span>
+    </button>
   );
 }
 

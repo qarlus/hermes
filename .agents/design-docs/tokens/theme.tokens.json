@@ -1,0 +1,77 @@
+{
+  "$schema": "https://example.com/hermes/theme.schema.json",
+  "name": "Hermes Midnight",
+  "modes": {
+    "default": {
+      "color": {
+        "app": {
+          "background": "#0A0D12",
+          "shell": "#0D1117",
+          "workspace": "#10151D",
+          "panel": "#141B24",
+          "panelElevated": "#18212C",
+          "dividerSubtle": "#273140"
+        },
+        "text": {
+          "primary": "#E6EDF6",
+          "secondary": "#A6B3C2",
+          "tertiary": "#7C8795",
+          "disabled": "#5B6572"
+        },
+        "accent": {
+          "primary": "#5B8CFF",
+          "hover": "#709CFF",
+          "mutedBackground": "rgba(91, 140, 255, 0.14)",
+          "focusRing": "rgba(91, 140, 255, 0.45)"
+        },
+        "status": {
+          "success": "#49B67D",
+          "warning": "#D9A54B",
+          "danger": "#D96A6A",
+          "info": "#5DA8FF"
+        },
+        "git": {
+          "addedBackground": "rgba(73, 182, 125, 0.16)",
+          "addedBorder": "rgba(73, 182, 125, 0.38)",
+          "removedBackground": "rgba(217, 106, 106, 0.16)",
+          "removedBorder": "rgba(217, 106, 106, 0.38)",
+          "contextBackground": "rgba(255, 255, 255, 0.02)"
+        }
+      },
+      "radius": {
+        "control": 8,
+        "panel": 10,
+        "shell": 12,
+        "pill": 999
+      },
+      "spacing": {
+        "micro": 4,
+        "compact": 8,
+        "medium": 12,
+        "panel": 16,
+        "panelRelaxed": 20,
+        "section": 24
+      },
+      "size": {
+        "tabRailHeight": 32,
+        "contextLineHeight": 36,
+        "iconButton": 28,
+        "navRailWidth": 60,
+        "dockMinHeight": 180
+      },
+      "motion": {
+        "hoverMs": 140,
+        "panelMs": 200,
+        "tabMs": 140
+      },
+      "typography": {
+        "ui": "Inter, ui-sans-serif, system-ui, sans-serif",
+        "mono": "JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace",
+        "body": 13,
+        "meta": 11,
+        "panelTitle": 15,
+        "sectionTitle": 18
+      }
+    }
+  }
+}

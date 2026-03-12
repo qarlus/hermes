@@ -53,6 +53,11 @@ export type TerminalLaunchProfile = {
   args?: string[];
 };
 
+export type FileOpenerPreference = {
+  programPath: string;
+  label: string;
+};
+
 export type HermesSettings = {
   themeId: HermesThemeId;
   terminalFontSize: number;
@@ -68,6 +73,7 @@ export type HermesSettings = {
   syncIncludesPinnedRepositories: boolean;
   lastExportedAt: string | null;
   lastImportedAt: string | null;
+  fileOpeners: Record<string, FileOpenerPreference>;
 };
 
 export type SyncedKeychainItem = {
@@ -223,47 +229,47 @@ const THEMES: HermesThemeDefinition[] = [
   {
     id: "nox",
     label: "Nox",
-    description: "Low-glare graphite with neutral contrast.",
+    description: "Blue-charcoal surfaces with warm white text.",
     colorScheme: "dark",
     app: {
-      bg: "#040506",
-      bgRail: "#060708",
-      bgPanel: "#090a0c",
-      bgPanel2: "#0d0e11",
-      bgPanel3: "#121418",
-      bgInput: "#0d0f12",
-      text: "#f5f5f6",
-      textSoft: "rgba(245, 245, 246, 0.68)",
-      textFaint: "rgba(245, 245, 246, 0.38)",
-      border: "rgba(255, 255, 255, 0.08)",
-      borderStrong: "rgba(255, 255, 255, 0.14)",
-      accent: noxTheme.colors.accent,
-      accentInk: "#050608",
-      success: "#97d4a6",
-      danger: "#ff9f9f"
+      bg: "#0A0D12",
+      bgRail: "#0D1117",
+      bgPanel: "#10151D",
+      bgPanel2: "#141B24",
+      bgPanel3: "#18212C",
+      bgInput: "#10151D",
+      text: "#E6EDF6",
+      textSoft: "#A6B3C2",
+      textFaint: "#7C8795",
+      border: "rgba(255, 255, 255, 0.06)",
+      borderStrong: "rgba(255, 255, 255, 0.10)",
+      accent: "#5B8CFF",
+      accentInk: "#0A0D12",
+      success: "#49B67D",
+      danger: "#D96A6A"
     },
     terminal: {
-      background: "#000000",
-      foreground: "#f4f7fb",
-      cursor: "#8ed2ff",
-      cursorAccent: "#000000",
-      selectionBackground: "rgba(255, 255, 255, 0.14)",
-      black: "#000000",
-      red: "#ff7d81",
-      green: "#79f0b2",
-      yellow: "#f5d06f",
-      blue: "#8ed2ff",
-      magenta: "#cba6ff",
-      cyan: "#82e6e6",
-      white: "#f4f7fb",
-      brightBlack: "#586274",
-      brightRed: "#ff9ca0",
-      brightGreen: "#9ff7c4",
-      brightYellow: "#ffe08d",
-      brightBlue: "#bde8ff",
-      brightMagenta: "#dbb9ff",
-      brightCyan: "#9eeded",
-      brightWhite: "#ffffff"
+      background: "#0A0D12",
+      foreground: "#E6EDF6",
+      cursor: "#5B8CFF",
+      cursorAccent: "#0A0D12",
+      selectionBackground: "rgba(91, 140, 255, 0.24)",
+      black: "#0A0D12",
+      red: "#D96A6A",
+      green: "#49B67D",
+      yellow: "#D9A54B",
+      blue: "#5B8CFF",
+      magenta: "#B87FFF",
+      cyan: "#5DA8FF",
+      white: "#E6EDF6",
+      brightBlack: "#5B6572",
+      brightRed: "#E88A8A",
+      brightGreen: "#6BC994",
+      brightYellow: "#E5B96A",
+      brightBlue: "#709CFF",
+      brightMagenta: "#C99CFF",
+      brightCyan: "#7DBFFF",
+      brightWhite: "#FFFFFF"
     }
   },
   {
@@ -537,7 +543,8 @@ export function createDefaultHermesSettings(platform: DevicePlatform): HermesSet
     syncIncludesCommands: true,
     syncIncludesPinnedRepositories: true,
     lastExportedAt: null,
-    lastImportedAt: null
+    lastImportedAt: null,
+    fileOpeners: {}
   };
 }
 
@@ -693,7 +700,32 @@ export function sanitizeHermesSettings(
     lastImportedAt:
       typeof candidate.lastImportedAt === "string" || candidate.lastImportedAt === null
         ? candidate.lastImportedAt
-        : defaults.lastImportedAt
+        : defaults.lastImportedAt,
+    fileOpeners: isRecord(candidate.fileOpeners)
+      ? Object.fromEntries(
+          Object.entries(candidate.fileOpeners).flatMap(([key, value]) => {
+            if (
+              !key.trim() ||
+              !isRecord(value) ||
+              typeof value.programPath !== "string" ||
+              !value.programPath.trim() ||
+              typeof value.label !== "string"
+            ) {
+              return [];
+            }
+
+            return [
+              [
+                key,
+                {
+                  programPath: value.programPath,
+                  label: value.label
+                } satisfies FileOpenerPreference
+              ]
+            ];
+          })
+        )
+      : defaults.fileOpeners
   };
 }
 
@@ -1298,6 +1330,8 @@ export function buildRelayInstallCommand(input: {
 
   const docker = [
     ...base,
+    "mkdir -p ~/hermes-relay-backups",
+    "docker run --rm -v hermes-relay-data:/data -v \"$HOME/hermes-relay-backups:/backup\" alpine sh -lc 'if [ -f /data/relay.json ]; then cp /data/relay.json \"/backup/relay-$(date +%Y%m%d-%H%M%S).json\"; echo \"Backed up relay state to ~/hermes-relay-backups/.\"; else echo \"No relay state file found to back up.\"; fi' || true",
     "docker build -t hermes-relay:latest .",
     "docker rm -f hermes-relay >/dev/null 2>&1 || true",
     `docker run -d --name hermes-relay --restart unless-stopped -p ${input.relayPort}:8787 -v hermes-relay-data:/data hermes-relay:latest`

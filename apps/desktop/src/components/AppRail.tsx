@@ -1,4 +1,13 @@
-import { Boxes, FolderGit2, HardDrive, KeyRound, Logs, Settings2, TerminalSquare } from "lucide-react";
+import type { ComponentType } from "react";
+import {
+  FolderSimple,
+  GearSix,
+  GitBranch,
+  House,
+  Key,
+  ListBullets,
+  TerminalWindow
+} from "@phosphor-icons/react";
 import type { ViewState } from "../lib/app";
 
 type AppRailProps = {
@@ -6,73 +15,85 @@ type AppRailProps = {
   onNavigate: (view: ViewState) => void;
 };
 
+type RailIcon = ComponentType<{ size?: number; weight?: "bold" | "duotone" | "fill" | "light" | "regular" | "thin" }>;
+
+type RailItemConfig = {
+  icon: RailIcon;
+  label: string;
+  title: string;
+  view?: ViewState;
+};
+
+const RAIL_ITEMS: RailItemConfig[] = [
+  { icon: House, label: "Home", title: "Home", view: "dashboard" },
+  { icon: TerminalWindow, label: "Sessions", title: "Sessions", view: "sessions" },
+  { icon: Key, label: "Keychain", title: "Keychain", view: "keychain" },
+  { icon: GitBranch, label: "Git", title: "Git", view: "git" },
+  { icon: FolderSimple, label: "Files", title: "Files", view: "files" },
+  { icon: GearSix, label: "Settings", title: "Settings", view: "settings" },
+  { icon: ListBullets, label: "Logs", title: "Logs" }
+];
+
 export function AppRail({ view, onNavigate }: AppRailProps) {
   return (
-    <div className="rail-shell">
-      <div className="rail-hitbox" />
-      <aside className="rail">
-        <div className="rail__brand">H</div>
-        <div className="rail__nav">
-          <button
-            className={`rail__item ${view === "dashboard" ? "rail__item--active" : ""}`}
-            onClick={() => onNavigate("dashboard")}
-            title="Dashboard"
-            type="button"
-          >
-            <HardDrive size={16} />
-            <span>Dashboard</span>
-          </button>
-          <button
-            className={`rail__item ${view === "sessions" ? "rail__item--active" : ""}`}
-            onClick={() => onNavigate("sessions")}
-            title="Sessions"
-            type="button"
-          >
-            <TerminalSquare size={16} />
-            <span>Sessions</span>
-          </button>
-          <button
-            className={`rail__item ${view === "keychain" ? "rail__item--active" : ""}`}
-            onClick={() => onNavigate("keychain")}
-            title="Keychain"
-            type="button"
-          >
-            <KeyRound size={16} />
-            <span>Keychain</span>
-          </button>
-          <button
-            className={`rail__item ${view === "git" ? "rail__item--active" : ""}`}
-            onClick={() => onNavigate("git")}
-            title="Git"
-            type="button"
-          >
-            <FolderGit2 size={16} />
-            <span>Git</span>
-          </button>
-          <button
-            className={`rail__item ${view === "files" ? "rail__item--active" : ""}`}
-            onClick={() => onNavigate("files")}
-            title="Files"
-            type="button"
-          >
-            <Boxes size={16} />
-            <span>Files</span>
-          </button>
-          <button
-            className={`rail__item ${view === "settings" ? "rail__item--active" : ""}`}
-            onClick={() => onNavigate("settings")}
-            title="Settings"
-            type="button"
-          >
-            <Settings2 size={16} />
-            <span>Settings</span>
-          </button>
-          <button className="rail__item" title="Logs" type="button">
-            <Logs size={16} />
-            <span>Logs</span>
-          </button>
-        </div>
-      </aside>
-    </div>
+    <aside className="app-rail" aria-label="Global navigation">
+      <button
+        aria-label="Open Home"
+        className="app-rail__brand"
+        onClick={() => onNavigate("dashboard")}
+        title="Hermes"
+        type="button"
+      >
+        <span className="app-rail__brand-mark">H</span>
+      </button>
+
+      <nav className="app-rail__nav">
+        {RAIL_ITEMS.map((item) => {
+          const targetView = item.view;
+
+          return (
+            <AppRailItem
+              icon={item.icon}
+              isActive={targetView === view}
+              key={item.label}
+              label={item.label}
+              onClick={targetView ? () => onNavigate(targetView) : undefined}
+              title={item.title}
+            />
+          );
+        })}
+      </nav>
+    </aside>
+  );
+}
+
+type AppRailItemProps = {
+  icon: RailIcon;
+  isActive: boolean;
+  label: string;
+  onClick?: () => void;
+  title: string;
+};
+
+export function AppRailItem({ icon: Icon, isActive, label, onClick, title }: AppRailItemProps) {
+  const isDisabled = !onClick;
+
+  return (
+    <button
+      aria-current={isActive ? "page" : undefined}
+      aria-label={label}
+      aria-disabled={isDisabled || undefined}
+      className={`app-rail__item ${isActive ? "app-rail__item--active" : ""} ${
+        isDisabled ? "app-rail__item--disabled" : ""
+      }`}
+      disabled={isDisabled}
+      onClick={onClick}
+      title={title}
+      type="button"
+    >
+      <span aria-hidden="true" className="app-rail__item-icon">
+        <Icon size={16} weight={isActive ? "fill" : "regular"} />
+      </span>
+    </button>
   );
 }

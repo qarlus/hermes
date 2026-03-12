@@ -4,6 +4,8 @@ import type {
   ConnectLocalSessionInput,
   ConnectSessionInput,
   FileBrowserDirectoryRecord,
+  LocalEditableFileRecord,
+  LocalEditableFileStateRecord,
   FileBrowserTarget,
   FilePreviewRecord,
   FileTransferOperation,
@@ -98,6 +100,9 @@ export const inspectRelayHost = (serverId: string) =>
 
 export const getOrCreateRelayDeviceIdentity = (deviceId: string) =>
   invoke<RelayDeviceIdentityRecord>("get_or_create_relay_device_identity", { deviceId });
+
+export const hasRelayWorkspaceKey = (workspaceId: string) =>
+  invoke<boolean>("has_relay_workspace_key", { workspaceId });
 
 export const wrapRelayWorkspaceKeyForDevice = (
   workspaceId: string,
@@ -196,6 +201,15 @@ export const readFileDirectory = (target: FileBrowserTarget) =>
 export const readFilePreview = (target: FileBrowserTarget) =>
   invoke<FilePreviewRecord>("read_file_preview", { target });
 
+export const openFileOnDevice = (target: FileBrowserTarget) =>
+  invoke<LocalEditableFileRecord>("open_file_on_device", { target });
+
+export const openFileWithDialogOnDevice = (target: FileBrowserTarget) =>
+  invoke<LocalEditableFileRecord>("open_file_with_dialog_on_device", { target });
+
+export const inspectLocalEditableFile = (localPath: string) =>
+  invoke<LocalEditableFileStateRecord>("inspect_local_editable_file", { localPath });
+
 export const createFileDirectory = (target: FileBrowserTarget, name: string) =>
   invoke<FileBrowserDirectoryRecord>("create_file_directory", { target, name });
 
@@ -222,6 +236,22 @@ export const writeFile = (
     parent,
     name,
     contentsBase64
+  });
+
+export const syncLocalFileToTarget = (localPath: string, target: FileBrowserTarget) =>
+  invoke<void>("sync_local_file_to_target", {
+    localPath,
+    target
+  });
+
+export const syncLocalFilesToTargets = (
+  files: Array<{
+    localPath: string;
+    target: FileBrowserTarget;
+  }>
+) =>
+  invoke<void>("sync_local_files_to_targets", {
+    files
   });
 
 export const listTerminalCommands = () =>

@@ -134,6 +134,22 @@ export interface FilePreviewRecord {
   truncated: boolean;
 }
 
+export interface LocalEditableFileRecord {
+  target: FileBrowserTarget;
+  localPath: string;
+  fileName: string;
+  temporary: boolean;
+  size: number | null;
+  modifiedAtMs: number | null;
+}
+
+export interface LocalEditableFileStateRecord {
+  localPath: string;
+  exists: boolean;
+  size: number | null;
+  modifiedAtMs: number | null;
+}
+
 export interface TerminalCommandRecord {
   id: string;
   name: string;

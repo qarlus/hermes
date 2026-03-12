@@ -39,7 +39,9 @@ const AUTH_PASSWORD: &str = "password";
 const KEYCHAIN_SERVICE: &str = "Hermes";
 const GITHUB_KEYRING_ACCOUNT: &str = "github-device-token";
 const RELAY_IDENTITY_KEY_PREFIX: &str = "relay-device-identity";
+const RELAY_IDENTITY_SETTING_PREFIX: &str = "relay.device-identity";
 const RELAY_WORKSPACE_KEY_PREFIX: &str = "relay-workspace-key";
+const RELAY_WORKSPACE_KEY_SETTING_PREFIX: &str = "relay.workspace-key";
 const INLINE_SSH_KEY_PREFIX: &str = "hermes-inline-ssh-key:";
 const GITHUB_TOKEN_SETTING_KEY: &str = "github.token";
 const GITHUB_API_VERSION: &str = "2022-11-28";
@@ -322,6 +324,33 @@ struct FilePreviewRecord {
     content: String,
     binary: bool,
     truncated: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalEditableFileRecord {
+    target: FileBrowserTargetInput,
+    local_path: String,
+    file_name: String,
+    temporary: bool,
+    size: Option<u64>,
+    modified_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalFileSyncInput {
+    local_path: String,
+    target: FileBrowserTargetInput,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalEditableFileStateRecord {
+    local_path: String,
+    exists: bool,
+    size: Option<u64>,
+    modified_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1815,6 +1844,44 @@ impl Database {
         Ok(())
     }
 
+    fn store_relay_workspace_key_backup(
+        &self,
+        workspace_id: &str,
+        encoded_key: &str,
+    ) -> Result<(), String> {
+        let connection = self.connection.lock().map_err(lock_error)?;
+        self.store_setting_secret_with_connection(
+            &connection,
+            &relay_workspace_key_setting_key(workspace_id),
+            encoded_key,
+        )
+    }
+
+    fn load_relay_workspace_key_backup(&self, workspace_id: &str) -> Result<Option<String>, String> {
+        let connection = self.connection.lock().map_err(lock_error)?;
+        self.read_setting_secret_with_connection(
+            &connection,
+            &relay_workspace_key_setting_key(workspace_id),
+        )
+    }
+
+    fn store_relay_identity_backup(&self, device_id: &str, secret: &str) -> Result<(), String> {
+        let connection = self.connection.lock().map_err(lock_error)?;
+        self.store_setting_secret_with_connection(
+            &connection,
+            &relay_identity_setting_key(device_id),
+            secret,
+        )
+    }
+
+    fn load_relay_identity_backup(&self, device_id: &str) -> Result<Option<String>, String> {
+        let connection = self.connection.lock().map_err(lock_error)?;
+        self.read_setting_secret_with_connection(
+            &connection,
+            &relay_identity_setting_key(device_id),
+        )
+    }
+
     fn load_github_token(&self) -> Result<Option<String>, String> {
         let connection = self.connection.lock().map_err(lock_error)?;
         if let Some(token) =
@@ -2058,8 +2125,11 @@ fn get_local_account_name() -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-fn get_or_create_relay_device_identity(device_id: String) -> Result<RelayDeviceIdentityRecord, String> {
-    let identity = load_or_create_relay_device_identity(&device_id)?;
+fn get_or_create_relay_device_identity(
+    state: State<'_, AppState>,
+    device_id: String,
+) -> Result<RelayDeviceIdentityRecord, String> {
+    let identity = load_or_create_relay_device_identity(&state, &device_id)?;
     Ok(RelayDeviceIdentityRecord {
         device_id: identity.device_id,
         public_keys: RelayDevicePublicKeysRecord {
@@ -2071,14 +2141,24 @@ fn get_or_create_relay_device_identity(device_id: String) -> Result<RelayDeviceI
 }
 
 #[tauri::command]
+fn has_relay_workspace_key(state: State<'_, AppState>, workspace_id: String) -> Result<bool, String> {
+    if workspace_id.trim().is_empty() {
+        return Err("Relay workspace id is required.".to_string());
+    }
+
+    Ok(load_existing_relay_workspace_key(&state, &workspace_id)?.is_some())
+}
+
+#[tauri::command]
 fn wrap_relay_workspace_key_for_device(
+    state: State<'_, AppState>,
     workspace_id: String,
     wrapped_by_device_id: String,
     recipient_device_id: String,
     recipient_public_key: String,
 ) -> Result<RelayWorkspaceKeyWrapRecord, String> {
-    let _identity = load_or_create_relay_device_identity(&wrapped_by_device_id)?;
-    let workspace_key = load_or_create_relay_workspace_key(&workspace_id)?;
+    let _identity = load_or_create_relay_device_identity(&state, &wrapped_by_device_id)?;
+    let workspace_key = load_or_create_relay_workspace_key(&state, &workspace_id)?;
     let recipient_public_bytes =
         decode_fixed_base64::<32>(&recipient_public_key, "Relay recipient public key is invalid.")?;
     let recipient_public = X25519PublicKey::from(recipient_public_bytes);
@@ -2129,11 +2209,12 @@ fn wrap_relay_workspace_key_for_device(
 
 #[tauri::command]
 fn unwrap_relay_workspace_key(
+    state: State<'_, AppState>,
     workspace_id: String,
     device_id: String,
     wrap: RelayWorkspaceKeyWrapRecord,
 ) -> Result<bool, String> {
-    let identity = load_or_create_relay_device_identity(&device_id)?;
+    let identity = load_or_create_relay_device_identity(&state, &device_id)?;
 
     if wrap.recipient_device_id != device_id {
         return Err("Wrapped workspace key does not belong to this device.".to_string());
@@ -2186,33 +2267,34 @@ fn unwrap_relay_workspace_key(
         return Err("Relay workspace key payload is invalid.".to_string());
     }
 
-    store_relay_workspace_key(&workspace_id, &STANDARD.encode(plaintext))?;
+    store_relay_workspace_key(&state, &workspace_id, &STANDARD.encode(plaintext))?;
     Ok(true)
 }
 
 #[tauri::command]
-fn rotate_relay_workspace_key(workspace_id: String) -> Result<bool, String> {
+fn rotate_relay_workspace_key(state: State<'_, AppState>, workspace_id: String) -> Result<bool, String> {
     if workspace_id.trim().is_empty() {
         return Err("Relay workspace id is required.".to_string());
     }
 
     let mut workspace_key = [0_u8; 32];
     OsRng.fill_bytes(&mut workspace_key);
-    store_relay_workspace_key(&workspace_id, &STANDARD.encode(workspace_key))?;
+    store_relay_workspace_key(&state, &workspace_id, &STANDARD.encode(workspace_key))?;
     Ok(true)
 }
 
 #[tauri::command]
 fn create_relay_encrypted_event(
+    state: State<'_, AppState>,
     workspace_id: String,
     device_id: String,
     event_id: String,
     sequence: u64,
     payload_json: String,
 ) -> Result<RelayEncryptedEventEnvelopeRecord, String> {
-    let identity = load_or_create_relay_device_identity(&device_id)?;
+    let identity = load_or_create_relay_device_identity(&state, &device_id)?;
     let signing_key = load_relay_signing_key(&identity)?;
-    let workspace_key = load_or_create_relay_workspace_key(&workspace_id)?;
+    let workspace_key = require_relay_workspace_key(&state, &workspace_id)?;
     let created_at = Utc::now().to_rfc3339();
     let aad = relay_event_aad(&workspace_id, &event_id, &device_id, sequence, &created_at);
     let (ciphertext, nonce) = encrypt_relay_payload(&workspace_key, payload_json.as_bytes(), &aad)?;
@@ -2245,15 +2327,16 @@ fn create_relay_encrypted_event(
 
 #[tauri::command]
 fn create_relay_encrypted_snapshot(
+    state: State<'_, AppState>,
     workspace_id: String,
     device_id: String,
     snapshot_id: String,
     base_sequence: u64,
     payload_json: String,
 ) -> Result<RelayEncryptedSnapshotEnvelopeRecord, String> {
-    let identity = load_or_create_relay_device_identity(&device_id)?;
+    let identity = load_or_create_relay_device_identity(&state, &device_id)?;
     let signing_key = load_relay_signing_key(&identity)?;
-    let workspace_key = load_or_create_relay_workspace_key(&workspace_id)?;
+    let workspace_key = require_relay_workspace_key(&state, &workspace_id)?;
     let created_at = Utc::now().to_rfc3339();
     let aad = relay_snapshot_aad(
         &workspace_id,
@@ -2292,6 +2375,7 @@ fn create_relay_encrypted_snapshot(
 
 #[tauri::command]
 fn decrypt_relay_encrypted_event(
+    state: State<'_, AppState>,
     workspace_id: String,
     device_id: String,
     author_signing_public_key: String,
@@ -2301,7 +2385,7 @@ fn decrypt_relay_encrypted_event(
         return Err("Relay event workspace does not match the current workspace.".to_string());
     }
 
-    let _identity = load_or_create_relay_device_identity(&device_id)?;
+    let _identity = load_or_create_relay_device_identity(&state, &device_id)?;
     let verifying_key = load_relay_verifying_key(&author_signing_public_key)?;
     let signature_payload = relay_event_signature_payload(
         &event.workspace_id,
@@ -2320,7 +2404,7 @@ fn decrypt_relay_encrypted_event(
         .verify(signature_payload.as_bytes(), &signature)
         .map_err(|_| "Relay event signature verification failed.".to_string())?;
 
-    let workspace_key = load_or_create_relay_workspace_key(&workspace_id)?;
+    let workspace_key = require_relay_workspace_key(&state, &workspace_id)?;
     let plaintext = decrypt_relay_payload(
         &workspace_key,
         &event.ciphertext,
@@ -2332,6 +2416,7 @@ fn decrypt_relay_encrypted_event(
 
 #[tauri::command]
 fn decrypt_relay_encrypted_snapshot(
+    state: State<'_, AppState>,
     workspace_id: String,
     device_id: String,
     author_signing_public_key: String,
@@ -2341,7 +2426,7 @@ fn decrypt_relay_encrypted_snapshot(
         return Err("Relay snapshot workspace does not match the current workspace.".to_string());
     }
 
-    let _identity = load_or_create_relay_device_identity(&device_id)?;
+    let _identity = load_or_create_relay_device_identity(&state, &device_id)?;
     let verifying_key = load_relay_verifying_key(&author_signing_public_key)?;
     let signature_payload = relay_snapshot_signature_payload(
         &snapshot.workspace_id,
@@ -2362,7 +2447,7 @@ fn decrypt_relay_encrypted_snapshot(
         .verify(signature_payload.as_bytes(), &signature)
         .map_err(|_| "Relay snapshot signature verification failed.".to_string())?;
 
-    let workspace_key = load_or_create_relay_workspace_key(&workspace_id)?;
+    let workspace_key = require_relay_workspace_key(&state, &workspace_id)?;
     let plaintext = decrypt_relay_payload(
         &workspace_key,
         &snapshot.ciphertext,
@@ -2588,6 +2673,37 @@ async fn read_file_preview(
 }
 
 #[tauri::command]
+async fn open_file_on_device(
+    state: State<'_, AppState>,
+    target: FileBrowserTargetInput,
+) -> Result<LocalEditableFileRecord, String> {
+    let database = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || open_file_on_device_inner(&database, &target))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn open_file_with_dialog_on_device(
+    state: State<'_, AppState>,
+    target: FileBrowserTargetInput,
+) -> Result<LocalEditableFileRecord, String> {
+    let database = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        open_file_with_dialog_on_device_inner(&database, &target)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn inspect_local_editable_file(local_path: String) -> Result<LocalEditableFileStateRecord, String> {
+    tauri::async_runtime::spawn_blocking(move || inspect_local_editable_file_inner(&local_path))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 async fn create_file_directory(
     state: State<'_, AppState>,
     target: FileBrowserTargetInput,
@@ -2641,8 +2757,33 @@ async fn write_file(
         write_file_inner(&database, &parent, &name, &contents_base64)?;
         load_file_directory(&database, &parent)
     })
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn sync_local_file_to_target(
+    state: State<'_, AppState>,
+    local_path: String,
+    target: FileBrowserTargetInput,
+) -> Result<(), String> {
+    let database = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        sync_local_file_to_target_inner(&database, &local_path, &target)
+    })
     .await
     .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn sync_local_files_to_targets(
+    state: State<'_, AppState>,
+    files: Vec<LocalFileSyncInput>,
+) -> Result<(), String> {
+    let database = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || sync_local_files_to_targets_inner(&database, &files))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -3431,6 +3572,111 @@ fn load_file_preview(
     }
 }
 
+fn open_file_on_device_inner(
+    database: &Database,
+    target: &FileBrowserTargetInput,
+) -> Result<LocalEditableFileRecord, String> {
+    let editable = materialize_local_editable_file(database, target)?;
+    open_path_on_device(Path::new(&editable.local_path))?;
+    Ok(editable)
+}
+
+fn open_file_with_dialog_on_device_inner(
+    database: &Database,
+    target: &FileBrowserTargetInput,
+) -> Result<LocalEditableFileRecord, String> {
+    let editable = materialize_local_editable_file(database, target)?;
+    open_path_with_dialog_on_device(Path::new(&editable.local_path))?;
+    Ok(editable)
+}
+
+fn materialize_local_editable_file(
+    database: &Database,
+    target: &FileBrowserTargetInput,
+) -> Result<LocalEditableFileRecord, String> {
+    match normalized_file_target_kind(&target.kind)? {
+        "local" => {
+            let path = PathBuf::from(required_file_path(target)?);
+            let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
+            if !metadata.is_file() {
+                return Err("Choose a file to open.".to_string());
+            }
+            let signature = local_file_signature_from_metadata(&path, &metadata);
+
+            Ok(LocalEditableFileRecord {
+                target: target.clone(),
+                local_path: path.to_string_lossy().to_string(),
+                file_name: path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                temporary: false,
+                size: signature.size,
+                modified_at_ms: signature.modified_at_ms,
+            })
+        }
+        "server" => {
+            let server = file_target_server(database, target)?;
+            let remote_path = required_file_path(target)?;
+            let local_path = download_remote_file_to_temp(database, &server, &remote_path)?;
+            let metadata = fs::metadata(&local_path).map_err(|error| error.to_string())?;
+            let signature = local_file_signature_from_metadata(&local_path, &metadata);
+
+            Ok(LocalEditableFileRecord {
+                target: FileBrowserTargetInput {
+                    kind: "server".to_string(),
+                    server_id: Some(server.id.clone()),
+                    path: Some(remote_path.clone()),
+                },
+                local_path: local_path.to_string_lossy().to_string(),
+                file_name: file_name_from_path(&remote_path),
+                temporary: true,
+                size: signature.size,
+                modified_at_ms: signature.modified_at_ms,
+            })
+        }
+        _ => Err("Unsupported file target.".to_string()),
+    }
+}
+
+fn inspect_local_editable_file_inner(local_path: &str) -> Result<LocalEditableFileStateRecord, String> {
+    let path = PathBuf::from(local_path.trim());
+    match fs::metadata(&path) {
+        Ok(metadata) => {
+            let signature = local_file_signature_from_metadata(&path, &metadata);
+            Ok(LocalEditableFileStateRecord {
+                local_path: path.to_string_lossy().to_string(),
+                exists: metadata.is_file(),
+                size: signature.size,
+                modified_at_ms: signature.modified_at_ms,
+            })
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(LocalEditableFileStateRecord {
+            local_path: path.to_string_lossy().to_string(),
+            exists: false,
+            size: None,
+            modified_at_ms: None,
+        }),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn local_file_signature_from_metadata(path: &Path, metadata: &fs::Metadata) -> LocalEditableFileStateRecord {
+    let modified_at_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|value| value.as_millis() as u64);
+
+    LocalEditableFileStateRecord {
+        local_path: path.to_string_lossy().to_string(),
+        exists: metadata.is_file(),
+        size: Some(metadata.len()),
+        modified_at_ms,
+    }
+}
+
 fn load_local_file_preview(target: &FileBrowserTargetInput) -> Result<FilePreviewRecord, String> {
     let path = required_file_path(target)?;
     let absolute_path = PathBuf::from(&path);
@@ -3669,6 +3915,265 @@ fn write_file_inner(
             transfer_result
         }
         _ => Err("Unsupported file target.".to_string()),
+    }
+}
+
+fn sync_local_file_to_target_inner(
+    database: &Database,
+    local_path: &str,
+    target: &FileBrowserTargetInput,
+) -> Result<(), String> {
+    let source = validated_local_upload_source(local_path)?;
+
+    match normalized_file_target_kind(&target.kind)? {
+        "local" => {
+            let destination = PathBuf::from(required_file_path(target)?);
+            if source != destination {
+                fs::copy(&source, &destination).map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        }
+        "server" => {
+            let server = file_target_server(database, target)?;
+            let remote_path = required_file_path(target)?;
+            let mut command = scp_command(database, &server)?;
+            command.arg(&source);
+            command.arg(build_scp_remote_spec(&server, &remote_path));
+            let output = command.output().map_err(|error| error.to_string())?;
+            if output.status.success() {
+                Ok(())
+            } else {
+                Err(command_error_message(
+                    &output,
+                    "Failed to upload the edited file.",
+                ))
+            }
+        }
+        _ => Err("Unsupported file target.".to_string()),
+    }
+}
+
+struct RemoteUploadBatch {
+    server: ServerRecord,
+    parent_path: String,
+    files: Vec<RemoteUploadBatchFile>,
+}
+
+struct RemoteUploadBatchFile {
+    source: PathBuf,
+    remote_path: String,
+}
+
+fn sync_local_files_to_targets_inner(
+    database: &Database,
+    files: &[LocalFileSyncInput],
+) -> Result<(), String> {
+    if files.is_empty() {
+        return Ok(());
+    }
+
+    if let Some(batch) = build_remote_upload_batch(database, files)? {
+        return upload_local_file_batch_to_remote_directory(database, &batch);
+    }
+
+    for file in files {
+        sync_local_file_to_target_inner(database, &file.local_path, &file.target)?;
+    }
+
+    Ok(())
+}
+
+fn build_remote_upload_batch(
+    database: &Database,
+    files: &[LocalFileSyncInput],
+) -> Result<Option<RemoteUploadBatch>, String> {
+    if files.len() < 2 {
+        return Ok(None);
+    }
+
+    let first = &files[0];
+    if normalized_file_target_kind(&first.target.kind)? != "server" {
+        return Ok(None);
+    }
+
+    let first_server = file_target_server(database, &first.target)?;
+    let first_remote_path = required_file_path(&first.target)?;
+    let first_parent_path = remote_parent_path(&first_remote_path).unwrap_or_else(|| ".".to_string());
+    let mut batch_files = vec![RemoteUploadBatchFile {
+        source: validated_local_upload_source(&first.local_path)?,
+        remote_path: first_remote_path,
+    }];
+
+    for file in &files[1..] {
+        if normalized_file_target_kind(&file.target.kind)? != "server" {
+            return Ok(None);
+        }
+
+        let server = file_target_server(database, &file.target)?;
+        if server.id != first_server.id {
+            return Ok(None);
+        }
+
+        let remote_path = required_file_path(&file.target)?;
+        let parent_path = remote_parent_path(&remote_path).unwrap_or_else(|| ".".to_string());
+        if parent_path != first_parent_path {
+            return Ok(None);
+        }
+
+        batch_files.push(RemoteUploadBatchFile {
+            source: validated_local_upload_source(&file.local_path)?,
+            remote_path,
+        });
+    }
+
+    Ok(Some(RemoteUploadBatch {
+        server: first_server,
+        parent_path: first_parent_path,
+        files: batch_files,
+    }))
+}
+
+fn upload_local_file_batch_to_remote_directory(
+    database: &Database,
+    batch: &RemoteUploadBatch,
+) -> Result<(), String> {
+    let staging_directory = std::env::temp_dir()
+        .join("hermes")
+        .join("upload-staging")
+        .join(Uuid::new_v4().to_string());
+    fs::create_dir_all(&staging_directory).map_err(|error| error.to_string())?;
+
+    let transfer_result = (|| {
+        let mut staged_paths = Vec::with_capacity(batch.files.len());
+        let mut staged_names = HashSet::with_capacity(batch.files.len());
+
+        for file in &batch.files {
+            let file_name = file_name_from_path(&file.remote_path);
+            if file_name.trim().is_empty() {
+                return Err("Choose a local file to upload.".to_string());
+            }
+            if !staged_names.insert(file_name.clone()) {
+                return Err(format!(
+                    "Cannot batch upload duplicate file names to {}.",
+                    batch.parent_path
+                ));
+            }
+
+            let staged_path = staging_directory.join(&file_name);
+            if fs::hard_link(&file.source, &staged_path).is_err() {
+                fs::copy(&file.source, &staged_path).map_err(|error| error.to_string())?;
+            }
+            staged_paths.push(staged_path);
+        }
+
+        let mut command = scp_command(database, &batch.server)?;
+        for staged_path in &staged_paths {
+            command.arg(staged_path);
+        }
+        command.arg(build_scp_remote_spec(&batch.server, &batch.parent_path));
+
+        let output = command.output().map_err(|error| error.to_string())?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(command_error_message(
+                &output,
+                "Failed to upload the edited files.",
+            ))
+        }
+    })();
+
+    let _ = fs::remove_dir_all(&staging_directory);
+    transfer_result
+}
+
+fn validated_local_upload_source(local_path: &str) -> Result<PathBuf, String> {
+    let source = PathBuf::from(local_path.trim());
+    let metadata = fs::metadata(&source).map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err("Choose a local file to upload.".to_string());
+    }
+    Ok(source)
+}
+
+fn download_remote_file_to_temp(
+    database: &Database,
+    server: &ServerRecord,
+    remote_path: &str,
+) -> Result<PathBuf, String> {
+    let file_name = file_name_from_path(remote_path);
+    let directory = std::env::temp_dir().join("hermes").join("opened-files");
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let local_path = directory.join(format!("{}-{}", Uuid::new_v4(), file_name));
+    let mut command = scp_command(database, server)?;
+    command.arg(build_scp_remote_spec(server, remote_path));
+    command.arg(&local_path);
+    let output = command.output().map_err(|error| error.to_string())?;
+    if output.status.success() {
+        Ok(local_path)
+    } else {
+        Err(command_error_message(
+            &output,
+            "Failed to download the remote file.",
+        ))
+    }
+}
+
+fn open_path_on_device(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let status = Command::new("cmd")
+            .args(["/C", "start", "", &path.to_string_lossy()])
+            .status()
+            .map_err(|error| error.to_string())?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err("Failed to open the file on this device.".to_string());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("open")
+            .arg(path)
+            .status()
+            .map_err(|error| error.to_string())?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err("Failed to open the file on this device.".to_string());
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let status = Command::new("xdg-open")
+            .arg(path)
+            .status()
+            .map_err(|error| error.to_string())?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err("Failed to open the file on this device.".to_string());
+    }
+}
+
+fn open_path_with_dialog_on_device(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let status = Command::new("rundll32.exe")
+            .arg("shell32.dll,OpenAs_RunDLL")
+            .arg(path)
+            .status()
+            .map_err(|error| error.to_string())?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err("Failed to show the native Open with dialog.".to_string());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        open_path_on_device(path)
     }
 }
 
@@ -4114,6 +4619,7 @@ fn scp_command(database: &Database, server: &ServerRecord) -> Result<Command, St
     let auth_secret = database.resolve_server_secret(server)?;
     let mut command =
         Command::new(resolve_program_path("scp").unwrap_or_else(|| PathBuf::from("scp")));
+    command.arg("-C");
     if server.port != 22 {
         command.arg("-P").arg(server.port.to_string());
     }
@@ -4142,7 +4648,22 @@ fn scp_command(database: &Database, server: &ServerRecord) -> Result<Command, St
 }
 
 fn build_scp_remote_spec(server: &ServerRecord, path: &str) -> String {
-    format!("{}:{}", ssh_target(server), shell_single_quote(path))
+    format!("{}:{}", ssh_target(server), escape_scp_remote_path(path))
+}
+
+fn escape_scp_remote_path(path: &str) -> String {
+    let mut escaped = String::with_capacity(path.len());
+    for ch in path.chars() {
+        match ch {
+            ' ' | '\t' | '\n' | '\\' | '"' | '\'' | '$' | '`' | '!' | '&' | ';' | '(' | ')' | '['
+            | ']' | '{' | '}' | '<' | '>' | '|' | '*' | '?' | '#' => {
+                escaped.push('\\');
+                escaped.push(ch);
+            }
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 fn build_remote_script_command(args: &[&str]) -> String {
@@ -4328,6 +4849,7 @@ pub fn run() {
             get_default_ssh_directory,
             get_local_account_name,
             get_or_create_relay_device_identity,
+            has_relay_workspace_key,
             wrap_relay_workspace_key_for_device,
             unwrap_relay_workspace_key,
             rotate_relay_workspace_key,
@@ -4344,10 +4866,15 @@ pub fn run() {
             connect_local_session,
             read_file_directory,
             read_file_preview,
+            open_file_on_device,
+            open_file_with_dialog_on_device,
+            inspect_local_editable_file,
             create_file_directory,
             delete_file_entries,
             transfer_file_entries,
             write_file,
+            sync_local_file_to_target,
+            sync_local_files_to_targets,
             list_terminal_commands,
             create_terminal_command,
             delete_terminal_command,
@@ -5810,41 +6337,64 @@ fn relay_workspace_key_keyring_entry(workspace_id: &str) -> Result<Entry, String
     )
 }
 
+fn relay_workspace_key_setting_key(workspace_id: &str) -> String {
+    format!("{RELAY_WORKSPACE_KEY_SETTING_PREFIX}:{workspace_id}")
+}
+
+fn relay_identity_setting_key(device_id: &str) -> String {
+    format!("{RELAY_IDENTITY_SETTING_PREFIX}:{device_id}")
+}
+
 fn load_or_create_relay_device_identity(
+    state: &AppState,
     device_id: &str,
 ) -> Result<StoredRelayDeviceIdentityRecord, String> {
     if device_id.trim().is_empty() {
         return Err("Relay device id is required.".to_string());
     }
 
-    let entry = relay_identity_keyring_entry(device_id)?;
-    match entry.get_password() {
-        Ok(secret) => serde_json::from_str::<StoredRelayDeviceIdentityRecord>(&secret)
-            .map_err(|error| error.to_string()),
-        Err(KeyringError::NoEntry) => {
-            let encryption_private = X25519SecretKey::random_from_rng(OsRng);
-            let encryption_public = X25519PublicKey::from(&encryption_private);
-            let signing_private = Ed25519SigningKey::generate(&mut OsRng);
-            let signing_public = signing_private.verifying_key();
-
-            let identity = StoredRelayDeviceIdentityRecord {
-                device_id: device_id.to_string(),
-                encryption_private_key: STANDARD.encode(encryption_private.to_bytes()),
-                encryption_public_key: STANDARD.encode(encryption_public.as_bytes()),
-                signing_private_key: STANDARD.encode(signing_private.to_keypair_bytes()),
-                signing_public_key: STANDARD.encode(signing_public.to_bytes()),
-            };
-
-            entry
-                .set_password(
-                    &serde_json::to_string(&identity).map_err(|error| error.to_string())?,
-                )
-                .map_err(|error| error.to_string())?;
-
-            Ok(identity)
+    let keyring_entry = relay_identity_keyring_entry(device_id).ok();
+    if let Some(entry) = keyring_entry.as_ref() {
+        match entry.get_password() {
+            Ok(secret) => {
+                return serde_json::from_str::<StoredRelayDeviceIdentityRecord>(&secret)
+                    .map_err(|error| error.to_string());
+            }
+            Err(KeyringError::NoEntry) => {}
+            Err(_) => {}
         }
-        Err(error) => Err(error.to_string()),
     }
+
+    if let Some(secret) = state.db.load_relay_identity_backup(device_id)? {
+        let identity = serde_json::from_str::<StoredRelayDeviceIdentityRecord>(&secret)
+            .map_err(|error| error.to_string())?;
+        if let Some(entry) = keyring_entry.as_ref() {
+            let _ = entry.set_password(&secret);
+        }
+        return Ok(identity);
+    }
+
+    let encryption_private = X25519SecretKey::random_from_rng(OsRng);
+    let encryption_public = X25519PublicKey::from(&encryption_private);
+    let signing_private = Ed25519SigningKey::generate(&mut OsRng);
+    let signing_public = signing_private.verifying_key();
+
+    let identity = StoredRelayDeviceIdentityRecord {
+        device_id: device_id.to_string(),
+        encryption_private_key: STANDARD.encode(encryption_private.to_bytes()),
+        encryption_public_key: STANDARD.encode(encryption_public.as_bytes()),
+        signing_private_key: STANDARD.encode(signing_private.to_keypair_bytes()),
+        signing_public_key: STANDARD.encode(signing_public.to_bytes()),
+    };
+    let serialized = serde_json::to_string(&identity).map_err(|error| error.to_string())?;
+    state
+        .db
+        .store_relay_identity_backup(device_id, &serialized)?;
+    if let Some(entry) = keyring_entry.as_ref() {
+        let _ = entry.set_password(&serialized);
+    }
+
+    Ok(identity)
 }
 
 fn load_relay_signing_key(
@@ -5864,29 +6414,79 @@ fn load_relay_verifying_key(public_key: &str) -> Result<Ed25519VerifyingKey, Str
     Ed25519VerifyingKey::from_bytes(&public_key_bytes).map_err(|error| error.to_string())
 }
 
-fn load_or_create_relay_workspace_key(workspace_id: &str) -> Result<[u8; 32], String> {
+fn load_existing_relay_workspace_key(
+    state: &AppState,
+    workspace_id: &str,
+) -> Result<Option<[u8; 32]>, String> {
     if workspace_id.trim().is_empty() {
         return Err("Relay workspace id is required.".to_string());
     }
 
-    let entry = relay_workspace_key_keyring_entry(workspace_id)?;
-    match entry.get_password() {
-        Ok(secret) => decode_fixed_base64::<32>(&secret, "Local relay workspace key is invalid."),
-        Err(KeyringError::NoEntry) => {
-            let mut workspace_key = [0_u8; 32];
-            OsRng.fill_bytes(&mut workspace_key);
-            store_relay_workspace_key(workspace_id, &STANDARD.encode(workspace_key))?;
-            Ok(workspace_key)
+    let keyring_entry = relay_workspace_key_keyring_entry(workspace_id).ok();
+    if let Some(entry) = keyring_entry.as_ref() {
+        match entry.get_password() {
+            Ok(secret) => {
+                return decode_fixed_base64::<32>(&secret, "Local relay workspace key is invalid.")
+                    .map(Some);
+            }
+            Err(KeyringError::NoEntry) => {}
+            Err(_) => {}
         }
-        Err(error) => Err(error.to_string()),
     }
+
+    if let Some(secret) = state.db.load_relay_workspace_key_backup(workspace_id)? {
+        let workspace_key =
+            decode_fixed_base64::<32>(&secret, "Local relay workspace key is invalid.")?;
+        if let Some(entry) = keyring_entry.as_ref() {
+            let _ = entry.set_password(&secret);
+        }
+        return Ok(Some(workspace_key));
+    }
+
+    Ok(None)
 }
 
-fn store_relay_workspace_key(workspace_id: &str, encoded_key: &str) -> Result<(), String> {
-    let entry = relay_workspace_key_keyring_entry(workspace_id)?;
-    entry
-        .set_password(encoded_key)
-        .map_err(|error| error.to_string())
+fn load_or_create_relay_workspace_key(
+    state: &AppState,
+    workspace_id: &str,
+) -> Result<[u8; 32], String> {
+    if let Some(workspace_key) = load_existing_relay_workspace_key(state, workspace_id)? {
+        return Ok(workspace_key);
+    }
+
+    let mut workspace_key = [0_u8; 32];
+    OsRng.fill_bytes(&mut workspace_key);
+    store_relay_workspace_key(state, workspace_id, &STANDARD.encode(workspace_key))?;
+    Ok(workspace_key)
+}
+
+fn require_relay_workspace_key(
+    state: &AppState,
+    workspace_id: &str,
+) -> Result<[u8; 32], String> {
+    load_existing_relay_workspace_key(state, workspace_id)?.ok_or_else(|| {
+        "Local relay workspace key was not found on this device.".to_string()
+    })
+}
+
+fn store_relay_workspace_key(
+    state: &AppState,
+    workspace_id: &str,
+    encoded_key: &str,
+) -> Result<(), String> {
+    if workspace_id.trim().is_empty() {
+        return Err("Relay workspace id is required.".to_string());
+    }
+
+    state
+        .db
+        .store_relay_workspace_key_backup(workspace_id, encoded_key)?;
+
+    if let Ok(entry) = relay_workspace_key_keyring_entry(workspace_id) {
+        let _ = entry.set_password(encoded_key);
+    }
+
+    Ok(())
 }
 
 fn decode_fixed_base64<const N: usize>(value: &str, error_message: &str) -> Result<[u8; N], String> {

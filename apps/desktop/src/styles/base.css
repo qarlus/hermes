@@ -1,0 +1,62 @@
+:root {
+  color-scheme: dark;
+  font-family: "Manrope Variable", "Manrope", "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, monospace;
+
+  --shell-rail-width: 52px;
+  --shell-secondary-rail-width: 248px;
+  --shell-strip-height: 56px;
+  --shell-page-padding: 32px;
+  --shell-home-max: 960px;
+  --shell-standard-max: 1020px;
+  --shell-wide-max: 1160px;
+  --shell-divider: rgba(255, 255, 255, 0.055);
+  --shell-divider-strong: rgba(255, 255, 255, 0.085);
+  --shell-focus-ring: 0 0 0 3px rgba(91, 140, 255, 0.2);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  min-height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Manrope Variable", "Manrope", "Segoe UI", sans-serif;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: inherit;
+}
+
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+button:focus-visible {
+  outline: none;
+  box-shadow: var(--shell-focus-ring);
+}
+
+code,
+pre {
+  font-family: var(--font-mono);
+}

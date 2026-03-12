@@ -19,7 +19,7 @@ type RelaySetupDialogProps = {
   relayState: RelayClientState;
   relayHostServer: ServerRecord | null;
   relayConflictDomains: string[];
-  relayBusyAction: "refresh" | "revoke" | "health" | "inspect" | "approve" | null;
+  relayBusyAction: "refresh" | "revoke" | "health" | "inspect" | "approve" | "relink" | null;
   relayInstallState: "idle" | "installing" | "checking" | "ready" | "error";
   relayInstallMessage: string | null;
   relayInstallTab: TerminalTab | null;
@@ -30,6 +30,7 @@ type RelaySetupDialogProps = {
   onOpenRelayInstallSession: () => void;
   onRefreshRelayWorkspace: () => void;
   onApproveRelayDevice: (deviceId: string) => void;
+  onRelinkRelayDevice: (deviceId: string) => void;
   onRevokeRelayDevice: (deviceId: string) => void;
   onResolveRelayConflict: (strategy: "local" | "remote") => void;
 };
@@ -50,6 +51,7 @@ export function RelaySetupDialog({
   onOpenRelayInstallSession,
   onRefreshRelayWorkspace,
   onApproveRelayDevice,
+  onRelinkRelayDevice,
   onRevokeRelayDevice,
   onResolveRelayConflict
 }: RelaySetupDialogProps) {
@@ -308,6 +310,16 @@ export function RelaySetupDialog({
                                 type="button"
                               >
                                 {relayBusyAction === "approve" ? "Approving..." : "Approve"}
+                              </button>
+                            ) : null}
+                            {isRelayMaster && device.status === "approved" ? (
+                              <button
+                                className="ghost-button"
+                                disabled={relayBusyAction !== null}
+                                onClick={() => onRelinkRelayDevice(device.id)}
+                                type="button"
+                              >
+                                {relayBusyAction === "relink" ? "Relinking..." : "Relink"}
                               </button>
                             ) : null}
                             {isRelayMaster &&

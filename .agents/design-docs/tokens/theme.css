@@ -1,0 +1,50 @@
+:root[data-theme="hermes-midnight"] {
+  --hm-color-app-background: #0A0D12;
+  --hm-color-shell-background: #0D1117;
+  --hm-color-workspace-background: #10151D;
+  --hm-color-panel-background: #141B24;
+  --hm-color-panel-elevated: #18212C;
+  --hm-color-divider-subtle: #273140;
+
+  --hm-color-text-primary: #E6EDF6;
+  --hm-color-text-secondary: #A6B3C2;
+  --hm-color-text-tertiary: #7C8795;
+  --hm-color-text-disabled: #5B6572;
+
+  --hm-color-accent: #5B8CFF;
+  --hm-color-accent-hover: #709CFF;
+  --hm-color-accent-muted: rgba(91, 140, 255, 0.14);
+  --hm-color-focus-ring: rgba(91, 140, 255, 0.45);
+
+  --hm-color-success: #49B67D;
+  --hm-color-warning: #D9A54B;
+  --hm-color-danger: #D96A6A;
+  --hm-color-info: #5DA8FF;
+
+  --hm-color-diff-added-bg: rgba(73, 182, 125, 0.16);
+  --hm-color-diff-added-border: rgba(73, 182, 125, 0.38);
+  --hm-color-diff-removed-bg: rgba(217, 106, 106, 0.16);
+  --hm-color-diff-removed-border: rgba(217, 106, 106, 0.38);
+  --hm-color-diff-context-bg: rgba(255, 255, 255, 0.02);
+
+  --hm-radius-control: 8px;
+  --hm-radius-panel: 10px;
+  --hm-radius-shell: 12px;
+  --hm-radius-pill: 999px;
+
+  --hm-space-1: 4px;
+  --hm-space-2: 8px;
+  --hm-space-3: 12px;
+  --hm-space-4: 16px;
+  --hm-space-5: 20px;
+  --hm-space-6: 24px;
+
+  --hm-size-tab-rail-height: 32px;
+  --hm-size-context-line-height: 36px;
+  --hm-size-icon-button: 28px;
+  --hm-size-nav-rail-width: 60px;
+  --hm-size-dock-min-height: 180px;
+
+  --hm-font-ui: Inter, ui-sans-serif, system-ui, sans-serif;
+  --hm-font-mono: JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace;
+}

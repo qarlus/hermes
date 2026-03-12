@@ -315,9 +315,6 @@ class HermesRelayStore {
     if (device.status === "revoked" || device.revokedAt) {
       throw new Error("This device has already been revoked.");
     }
-    if (device.status === "approved") {
-      return this.buildSession(store.relayId, workspace, workspace.masterDeviceId, relayUrl, workspace.adminToken);
-    }
 
     if (input.wrappedWorkspaceKey.recipientDeviceId !== device.id) {
       throw new Error("Wrapped workspace key recipient does not match the pending device.");
@@ -326,7 +323,7 @@ class HermesRelayStore {
     const timestamp = new Date().toISOString();
     device.status = "approved";
     device.role = device.id === workspace.masterDeviceId ? "master" : "member";
-    device.approvedAt = timestamp;
+    device.approvedAt ??= timestamp;
     device.lastSeenAt = timestamp;
     this.upsertWorkspaceKeyWrap(workspace, input.wrappedWorkspaceKey);
 

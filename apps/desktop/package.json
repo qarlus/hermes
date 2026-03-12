@@ -10,6 +10,7 @@
     "@hermes/db": "workspace:*",
     "@hermes/sync": "workspace:*",
     "@hermes/ui": "workspace:*",
+    "@phosphor-icons/react": "^2.1.10",
     "@tauri-apps/api": "^2.2.0",
     "@tauri-apps/plugin-dialog": "^2.2.0",
     "@xterm/addon-fit": "^0.11.0",

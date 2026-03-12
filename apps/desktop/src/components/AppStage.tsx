@@ -13,7 +13,7 @@ import type {
   TmuxSessionRecord
 } from "@hermes/core";
 import { ArrowUpCircle, FolderPlus, Laptop, Server } from "lucide-react";
-import { HostDashboard } from "../features/dashboard/HostDashboard";
+import HostDashboard from "../features/dashboard/HostDashboard";
 import { FileBrowserPage } from "../features/files/FileBrowserPage";
 import { GitPage, type GitRepositoryView, type GitToolbarContext } from "../features/git/GitPage";
 import { KeychainPage } from "../features/keychain/KeychainPage";
@@ -76,6 +76,7 @@ type AppStageProps = {
   tmuxMetadataCount: number;
   sessionHistoryCount: number;
   syncBusyAction: "export" | "import" | null;
+  relayConnected: boolean;
   onCreateProject: () => void;
   onOpenProject: (projectId: string) => void;
   onCopyPublicKey: (id: string) => void;
@@ -151,6 +152,7 @@ type AppStageProps = {
   onSyncIncludesPinnedRepositoriesChange: (value: boolean) => void;
   onExportSyncBundle: () => void;
   onImportSyncBundle: (file: File) => void;
+  onNotify: (message: string, tone: "success" | "info" | "error") => void;
 };
 
 export function AppStage({
@@ -198,6 +200,7 @@ export function AppStage({
   tmuxMetadataCount,
   sessionHistoryCount,
   syncBusyAction,
+  relayConnected,
   onCreateProject,
   onOpenProject,
   onCopyPublicKey,
@@ -268,7 +271,8 @@ export function AppStage({
   onSyncIncludesCommandsChange,
   onSyncIncludesPinnedRepositoriesChange,
   onExportSyncBundle,
-  onImportSyncBundle
+  onImportSyncBundle,
+  onNotify
 }: AppStageProps) {
   const sessionsEmptyState = (
     <div className="workspace__empty workspace__content">
@@ -403,7 +407,7 @@ export function AppStage({
               tabs={tabs}
             />
           ) : view === "files" ? (
-            <FileBrowserPage servers={servers} />
+            <FileBrowserPage onNotify={onNotify} servers={servers} />
           ) : view === "settings" ? (
             <SettingsPage
               activeTheme={activeTheme}
@@ -440,9 +444,12 @@ export function AppStage({
               favoriteServers={favoriteServers}
               onConnect={onConnect}
               onCreateProject={onCreateProject}
+              onCreateServer={onCreateServer}
               onOpenTerminalSession={onOpenTerminalSession}
+              onOpenLocalShell={onNewTab ?? (() => {})}
               onOpenProject={onOpenProject}
               projects={filteredProjects}
+              relayConnected={relayConnected}
               servers={servers}
               serverCountByProject={serverCountByProject}
               tabs={tabs}
