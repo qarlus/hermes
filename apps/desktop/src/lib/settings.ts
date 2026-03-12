@@ -1263,6 +1263,7 @@ export function buildRelayCheckCommand(runtime: RelayClientState["installRuntime
     "set -e",
     "echo 'Checking Hermes Relay prerequisites...'",
     "command -v curl >/dev/null && curl --version | head -n 1 || echo 'curl missing'",
+    "command -v git >/dev/null && git --version || echo 'git missing (needed for private repo fallback)'",
     "command -v docker >/dev/null && docker --version || echo 'docker missing'",
     "command -v tailscale >/dev/null && tailscale status || echo 'tailscale missing'"
   ];
@@ -1271,6 +1272,7 @@ export function buildRelayCheckCommand(runtime: RelayClientState["installRuntime
     "set -e",
     "echo 'Checking Hermes Relay prerequisites...'",
     "command -v curl >/dev/null && curl --version | head -n 1 || echo 'curl missing'",
+    "command -v git >/dev/null && git --version || echo 'git missing (needed for private repo fallback)'",
     "command -v container >/dev/null && container system info || echo 'apple container missing'",
     "command -v tailscale >/dev/null && tailscale status || echo 'tailscale missing'"
   ];
@@ -1286,11 +1288,12 @@ export function buildRelayInstallCommand(input: {
     "set -e",
     "command -v curl >/dev/null 2>&1 || { echo 'curl is required to install Hermes Relay.'; exit 1; }",
     'RELAY_REF="${HERMES_RELAY_REF:-master}"',
-    'RELAY_BASE_URL="https://raw.githubusercontent.com/qarlus/hermes/${RELAY_REF}/apps/server"',
+    'RELAY_BASE_URL="${HERMES_RELAY_BASE_URL:-https://raw.githubusercontent.com/qarlus/hermes/${RELAY_REF}/apps/server}"',
+    'RELAY_REPO="${HERMES_RELAY_REPO:-https://github.com/qarlus/hermes.git}"',
     "mkdir -p ~/hermes-relay-package",
     "cd ~/hermes-relay-package",
-    'curl -fsSL "$RELAY_BASE_URL/Dockerfile.runtime" -o Dockerfile',
-    'curl -fsSL "$RELAY_BASE_URL/dist/index.js" -o index.js'
+    "rm -f Dockerfile index.js",
+    'if curl -fsSL "$RELAY_BASE_URL/Dockerfile.runtime" -o Dockerfile && curl -fsSL "$RELAY_BASE_URL/dist/index.js" -o index.js; then echo \'Downloaded Hermes Relay runtime artifacts.\'; else echo \'Raw relay artifact download failed. Falling back to git clone.\'; rm -f Dockerfile index.js; command -v git >/dev/null 2>&1 || { echo \'git is required when relay artifacts are not publicly downloadable.\'; echo \'Set HERMES_RELAY_REPO to an accessible clone URL if this repository is private.\'; exit 1; }; rm -rf ~/hermes-relay-src; git clone --depth 1 --branch \"$RELAY_REF\" \"$RELAY_REPO\" ~/hermes-relay-src; cp ~/hermes-relay-src/apps/server/Dockerfile.runtime Dockerfile; cp ~/hermes-relay-src/apps/server/dist/index.js index.js; fi'
   ];
 
   const docker = [
