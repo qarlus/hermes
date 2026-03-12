@@ -1,14 +1,23 @@
 # Hermes Relay
 
-`Hermes Relay` is the tiny self-hosted sync relay for Hermes clients.
+`Hermes Relay` is the self-hosted server package used by Hermes clients for relay bootstrap and device-linking flows.
 
-The relay is intended to run on a machine you control, typically a VPS, NAS, home server, or always-on desktop that is already reachable over Tailscale. Hermes clients connect to it to bootstrap a workspace, join linked devices, inspect device state, and revoke devices.
+It is intended to run on infrastructure you control, typically behind Tailscale on a VPS, NAS, home server, or always-on desktop. The relay stores relay metadata and linked-device records. The intended long-term model is ciphertext-first, so user data should be encrypted before it reaches the relay.
 
-The relay stores relay metadata and workspace/device records only. The longer-term sync design is ciphertext-first: user data should be encrypted before it reaches the relay.
+## In this repo
 
-## Current scope
+- package: `apps/server`
+- source entrypoint: `apps/server/src/index.ts`
+- bundled runtime entrypoint: `apps/server/dist/index.js`
+- minimal runtime image: `apps/server/Dockerfile.runtime`
+- full repo build image: `apps/server/Dockerfile`
 
-This package currently provides:
+The desktop install flow is designed around the minimal runtime artifacts:
+
+- `apps/server/dist/index.js`
+- `apps/server/Dockerfile.runtime`
+
+## Current API surface
 
 - `GET /health`
 - `POST /api/relay/bootstrap`
@@ -16,28 +25,11 @@ This package currently provides:
 - `POST /api/relay/inspect`
 - `POST /api/relay/revoke-device`
 
-State is persisted to a local JSON file.
-
-## Repository layout
-
-The relay lives in this repo:
-
-- app package: `apps/server`
-- runtime entrypoint: `apps/server/src/index.ts`
-- bundled runtime entrypoint: `apps/server/dist/index.js`
-- minimal runtime container build: `apps/server/Dockerfile.runtime`
-- full repo build container: `apps/server/Dockerfile`
-
-The desktop install flow now downloads only the minimal runtime package from this repo:
-
-- `apps/server/dist/index.js`
-- `apps/server/Dockerfile.runtime`
-
-It does not clone the monorepo onto the relay host anymore.
+State is currently persisted to a local JSON file.
 
 ## Local development
 
-From the repo root:
+From the repository root:
 
 ```bash
 bun install
@@ -68,13 +60,13 @@ bun run --filter @hermes/server start
 
 ## Docker
 
-Minimal runtime build:
+Build the minimal runtime image:
 
 ```bash
 docker build -f apps/server/Dockerfile.runtime -t hermes-relay:latest apps/server/dist
 ```
 
-Run:
+Run it:
 
 ```bash
 docker run -d \
@@ -87,30 +79,25 @@ docker run -d \
   hermes-relay:latest
 ```
 
-If you are developing the relay locally, refresh the bundled runtime first:
+If you are iterating on the relay locally, rebuild the bundled runtime first:
 
 ```bash
 bun run --filter @hermes/server build
 ```
 
-## Recommended deployment
+## Deployment guidance
 
 For the current Hermes model:
 
 - install Tailscale separately on the host
 - join the host to your tailnet
-- run `hermes-relay` as a normal container
-- expose the relay only over the host's Tailscale path
-- do not expose the relay publicly on the internet
-
-In practice:
-
-- bind or firewall the relay so only the Tailscale interface can reach it
-- keep the host as the network boundary
+- expose the relay only on the Tailscale path
+- keep the relay off the public internet
 - treat the relay as availability infrastructure, not trusted plaintext storage
 
-## Notes
+## Related docs
 
-- This is an early relay foundation for local testing and client integration.
-- The Apple Container install path in the desktop app is still provisional and needs runtime validation on a real macOS host.
-- The eventual sync engine should move app state replication onto encrypted snapshots and change logs instead of relay-managed plaintext records.
+- [Repository root README](../../README.md)
+- [Architecture](../../docs/architecture.md)
+- [Key decisions](../../docs/decisions.md)
+- [Roadmap](../../docs/roadmap.md)

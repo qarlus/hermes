@@ -1,75 +1,49 @@
 # Hermes
 
-Hermes is an open-source developer workspace for terminal-first infrastructure work.
+Hermes is a desktop-first developer workspace for terminal-heavy infrastructure work. The repository is organized as a Bun monorepo with a Tauri desktop client, a self-hosted relay service, shared TypeScript packages, and a mobile scaffold for future expansion.
 
-It combines saved SSH targets, local terminal sessions, tmux-aware reconnect flows, key and credential management, Git tooling, and a self-hosted sync direction under one desktop surface. The current stack is built as a Bun workspace with a Tauri desktop app, shared packages, a mobile scaffold, and a tiny self-hosted relay service.
+## What Hermes covers
 
-## What exists today
+- Saved SSH targets and local-first workspace organization
+- PTY-backed terminal sessions that reuse the system `ssh` client
+- Remote `tmux` attach-or-create flows
+- Shared package boundaries for storage, sync, crypto, and UI
+- A small self-hosted relay for device linking and sync bootstrap flows
 
-### Desktop app
+## Repository layout
 
-The desktop app in `apps/desktop` currently includes:
+```text
+apps/
+  desktop/   Tauri desktop client (React + Vite + Rust)
+  mobile/    mobile scaffold
+  server/    Hermes Relay service
+docs/
+  architecture.md
+  decisions.md
+  roadmap.md
+packages/
+  core/      shared domain types and connect-flow helpers
+  crypto/    crypto and secret-storage boundary
+  db/        typed desktop persistence client
+  sync/      sync contracts and relay types
+  ui/        shared UI package
+```
 
-- project and workspace organization
-- saved server targets with SSH connection flows
-- local device terminal launch profiles
-- tmux session discovery and reconnect flows
-- keychain and SSH key utilities
-- Git and GitHub-oriented workspace views
-- file browser surface
-- theme and terminal settings
-- manual export/import sync bundle fallback
-- relay-aware sync and device management UI
+## Workspace packages
 
-### Relay
+### Apps
 
-The relay in `apps/server` is the self-hosted sync foundation for Hermes.
+- `@hermes/desktop`: primary desktop application
+- `@hermes/mobile`: mobile placeholder package
+- `@hermes/server`: self-hosted relay service
 
-Current relay responsibilities:
-
-- bootstrap a relay workspace
-- join additional devices
-- inspect linked devices
-- revoke linked devices
-- persist relay state locally
-
-Recommended deployment model:
-
-- run the relay on infrastructure you control
-- install Tailscale separately on that host
-- expose the relay only over the tailnet
-- keep Hermes user data encrypted before it is uploaded
-
-More detail is in [apps/server/README.md](./apps/server/README.md).
-
-### Packages
-
-Shared packages live under `packages`:
+### Shared packages
 
 - `@hermes/core`
 - `@hermes/crypto`
 - `@hermes/db`
 - `@hermes/sync`
 - `@hermes/ui`
-
-### Mobile
-
-`apps/mobile` exists as a scaffold and is not yet a full user-facing client.
-
-## Repository layout
-
-```text
-apps/
-  desktop/   Tauri desktop client
-  mobile/    mobile scaffold
-  server/    Hermes Relay
-packages/
-  core/      shared types and helpers
-  crypto/    crypto primitives and helpers
-  db/        app persistence and commands
-  sync/      sync and relay types
-  ui/        shared UI package
-```
 
 ## Getting started
 
@@ -97,20 +71,35 @@ Build the desktop app:
 bun run desktop:build
 ```
 
-## Current product direction
+Run the relay locally:
 
-Hermes is moving toward a self-hosted sync model:
+```bash
+bun run --filter @hermes/server start
+```
 
-- no Hermes-hosted user data
+## Current direction
+
+Hermes is moving toward a self-hosted, encrypted-sync model:
+
+- desktop-first local workflow
 - user-controlled relay deployment
-- server-first relay installation from a saved SSH target
-- explicit device linking with master-device administration
-- manual bundle export/import as an offline fallback
+- device linking and relay-assisted sync bootstrap
+- encrypted data before relay upload
+- offline/manual import-export fallback
 
-The current relay implementation is an early foundation for that direction, not the finished encrypted replication engine.
+The current relay is an early foundation for that model, not the finished sync engine.
 
-## Documentation
+## Documentation index
 
-- Relay docs: [apps/server/README.md](./apps/server/README.md)
-- Changelog: [CHANGELOG.md](./CHANGELOG.md)
-- Current implementation notes: [plan.md](./plan.md)
+### README files
+
+- [Root README](./README.md)
+- [Relay README](./apps/server/README.md)
+
+### Project docs
+
+- [Architecture](./docs/architecture.md)
+- [Key decisions](./docs/decisions.md)
+- [Roadmap](./docs/roadmap.md)
+- [Changelog](./CHANGELOG.md)
+- [Current implementation notes](./plan.md)

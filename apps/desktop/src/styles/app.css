@@ -1110,9 +1110,7 @@ h3 {
 .git-detail__hero,
 .git-detail__composer {
   border: 1px solid rgba(255, 255, 255, 0.09);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.024) 0%, rgba(255, 255, 255, 0) 100%),
-    #090b0f;
+  background: #080a0d;
 }
 
 .git-browser,
@@ -1260,9 +1258,7 @@ h3 {
   gap: 16px;
   padding: 18px;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  background:
-    radial-gradient(circle at top left, rgba(255, 255, 255, 0.05), transparent 45%),
-    #0c1014;
+  background: #080a0d;
 }
 
 .git-browser__auth-copy,
@@ -3191,6 +3187,11 @@ h3 {
   height: 100%;
   padding: 16px;
   gap: 12px;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.014) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.014) 1px, transparent 1px),
+    transparent;
+  background-size: 20px 20px, 20px 20px, auto;
   overflow: hidden;
 }
 
@@ -3209,9 +3210,7 @@ h3 {
   gap: 16px;
   padding: 14px;
   border: 1px solid rgba(255, 255, 255, 0.09);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.024) 0%, rgba(255, 255, 255, 0) 100%),
-    #090b0f;
+  background: #080a0d;
 }
 
 .git-browser-screen__hero {
@@ -3221,10 +3220,7 @@ h3 {
   gap: 16px;
   padding: 18px;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  background:
-    radial-gradient(circle at top left, rgba(88, 166, 255, 0.18), transparent 34%),
-    radial-gradient(circle at bottom right, rgba(46, 160, 67, 0.14), transparent 30%),
-    #0a0d12;
+  background: #080a0d;
 }
 
 .git-browser-screen__hero-copy,
@@ -3302,9 +3298,7 @@ h3 {
 .git-screen-header {
   padding: 12px 14px;
   border: 1px solid rgba(255, 255, 255, 0.09);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.024) 0%, rgba(255, 255, 255, 0) 100%),
-    #090b0f;
+  background: #080a0d;
 }
 
 .git-screen-header__main {
@@ -3337,9 +3331,7 @@ h3 {
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-bottom: 1px solid rgba(255, 255, 255, 0.09);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.024) 0%, rgba(255, 255, 255, 0) 100%),
-    #090b0f;
+  background: #080a0d;
 }
 
 .git-nav__section:last-child {
@@ -3377,9 +3369,7 @@ h3 {
 
 .git-nav__connect--hero,
 .git-nav__empty--accent {
-  background:
-    radial-gradient(circle at top left, rgba(88, 166, 255, 0.12), transparent 38%),
-    rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .git-nav__connect-actions {
@@ -3441,9 +3431,7 @@ h3 {
   gap: 12px;
   padding: 12px;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  background:
-    radial-gradient(circle at top left, rgba(88, 166, 255, 0.1), transparent 34%),
-    rgba(255, 255, 255, 0.025);
+  background: rgba(255, 255, 255, 0.025);
 }
 
 .git-search-surface__header h3 {
@@ -3471,10 +3459,7 @@ h3 {
   margin: auto;
   padding: 28px;
   border: 1px solid rgba(255, 255, 255, 0.09);
-  background:
-    radial-gradient(circle at top left, rgba(88, 166, 255, 0.12), transparent 28%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.024) 0%, rgba(255, 255, 255, 0) 100%),
-    #090b0f;
+  background: #080a0d;
 }
 
 .git-onboarding__hero {
@@ -3506,9 +3491,7 @@ h3 {
 }
 
 .git-onboarding__card--primary {
-  background:
-    radial-gradient(circle at top left, rgba(88, 166, 255, 0.12), transparent 34%),
-    rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .git-onboarding__card-header {
