@@ -8,7 +8,6 @@ import {
   type MouseEvent as ReactMouseEvent
 } from "react";
 import {
-  ArrowCircleUp,
   ArrowClockwise,
   Copy,
   DesktopTower,
@@ -16,7 +15,6 @@ import {
   GearSix,
   GithubLogo,
   Key,
-  Laptop,
   MagnifyingGlass,
   Plus,
   TerminalWindow
@@ -115,6 +113,7 @@ import { ShellTopbar } from "./components/ShellTopbar";
 import type { GitRepositoryView, GitToolbarContext } from "./features/git/GitPage";
 import { RelaySetupDialog } from "./features/settings/RelaySetupDialog";
 import { LocalSessionPresetEditor } from "./features/sessions/LocalSessionPresetEditor";
+import { SessionNavigator } from "./features/sessions/SessionNavigator";
 import { SessionLauncher } from "./features/sessions/SessionLauncher";
 import { ToolUpdatesPanel } from "./features/sessions/ToolUpdatesPanel";
 import {
@@ -233,6 +232,15 @@ type SessionRuntimeMetadata = {
   startedAt: string;
 };
 
+type SessionsBranchBinding = {
+  projectId: string;
+  branchName: string;
+  targetKind: "local" | "server";
+  serverId: string | null;
+  cwd: string | null;
+  label: string | null;
+};
+
 type RelayConflictState = {
   relayUrl: string;
   remoteBundle: HermesSyncBundle;
@@ -253,6 +261,11 @@ export function App() {
   const [tabs, setTabs] = useState<TerminalTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [sessionsProjectId, setSessionsProjectId] = useState<string | null>(null);
+  const [sessionsSelectedBranchByProject, setSessionsSelectedBranchByProject] = useState<Record<string, string>>({});
+  const [sessionsBranchBindingsByTabId, setSessionsBranchBindingsByTabId] = useState<
+    Record<string, SessionsBranchBinding>
+  >({});
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
   const [view, setView] = useState<ViewState>("dashboard");
   const [search, setSearch] = useState("");
@@ -390,14 +403,6 @@ export function App() {
         : tabs.at(-1) ?? null),
     [relayHostServer, relayInstallSessionId, tabs]
   );
-  const activeTerminalLabel = useMemo(
-    () =>
-      activeSessionTabServer
-        ? buildSshTarget(activeSessionTabServer)
-        : activeSessionTab?.title ?? null,
-    [activeSessionTab?.title, activeSessionTabServer]
-  );
-
   const serverCountByProject = useMemo(() => {
     const counts: Record<string, number> = {};
     servers.forEach((server) => {
@@ -483,6 +488,63 @@ export function App() {
       error: statesById.get(repository.id)?.error ?? null
     }));
   }, [gitRepositoryStates, localGitRepositories]);
+  const sessionsDefaultBranchByProject = useMemo(() => {
+    const defaults: Record<string, string> = {};
+
+    projects.forEach((project) => {
+      const repository = findProjectRepository(project, gitRepositories);
+      defaults[project.id] =
+        repository?.snapshot?.branch ??
+        repository?.snapshot?.branches.find((branch) => branch.current)?.name ??
+        "main";
+    });
+
+    return defaults;
+  }, [gitRepositories, projects]);
+  const sessionsSelectedBranchName = sessionsProjectId
+    ? sessionsSelectedBranchByProject[sessionsProjectId] ?? sessionsDefaultBranchByProject[sessionsProjectId] ?? null
+    : null;
+  const sessionsWorkspaceTabs = useMemo(() => {
+    if (!sessionsProjectId || !sessionsSelectedBranchName) {
+      return sessionTabs;
+    }
+
+    return sessionTabs.filter((tab) => {
+      const binding = sessionsBranchBindingsByTabId[tab.id];
+      return (
+        binding?.projectId === sessionsProjectId &&
+        binding.branchName === sessionsSelectedBranchName
+      );
+    });
+  }, [sessionTabs, sessionsBranchBindingsByTabId, sessionsProjectId, sessionsSelectedBranchName]);
+  const activeSessionsWorkspaceTab = useMemo(
+    () =>
+      sessionsWorkspaceTabs.find((tab) => tab.id === activeTabId) ??
+      sessionsWorkspaceTabs.at(-1) ??
+      null,
+    [activeTabId, sessionsWorkspaceTabs]
+  );
+  const activeSessionsWorkspaceTabServer = useMemo(
+    () => servers.find((server) => server.id === activeSessionsWorkspaceTab?.serverId) ?? null,
+    [activeSessionsWorkspaceTab?.serverId, servers]
+  );
+  const activeTerminalLabel = useMemo(
+    () =>
+      view === "sessions"
+        ? activeSessionsWorkspaceTabServer
+          ? buildSshTarget(activeSessionsWorkspaceTabServer)
+          : activeSessionsWorkspaceTab?.title ?? null
+        : activeSessionTabServer
+          ? buildSshTarget(activeSessionTabServer)
+          : activeSessionTab?.title ?? null,
+    [
+      activeSessionTab?.title,
+      activeSessionTabServer,
+      activeSessionsWorkspaceTab?.title,
+      activeSessionsWorkspaceTabServer,
+      view
+    ]
+  );
 
   const filteredGitRepositories = useMemo<GitRepositoryView[]>(() => {
     const query = deferredSearch.trim().toLowerCase();
@@ -1214,6 +1276,26 @@ export function App() {
     setSelectedServerId(serverId);
   };
 
+  const bindTabToSessionsBranch = (
+    tabId: string,
+    projectId: string,
+    branchName: string,
+    binding: Omit<SessionsBranchBinding, "projectId" | "branchName">
+  ) => {
+    setSessionsSelectedBranchByProject((current) => ({
+      ...current,
+      [projectId]: branchName
+    }));
+    setSessionsBranchBindingsByTabId((current) => ({
+      ...current,
+      [tabId]: {
+        projectId,
+        branchName,
+        ...binding
+      }
+    }));
+  };
+
   const handleConnect = async (
     serverId: string,
     tmuxSession?: string,
@@ -1315,8 +1397,10 @@ export function App() {
         startedAt: tab.startedAt
       });
       setActiveTabId(tab.id);
+      return tab;
     } catch (error) {
       pushToast(getErrorMessage(error), "error");
+      return null;
     }
   };
 
@@ -1484,7 +1568,163 @@ export function App() {
     }
   };
 
+  const handleSelectSessionsProject = (projectId: string | null) => {
+    setSessionsProjectId(projectId);
+    if (!projectId) {
+      return;
+    }
+
+    const branchName =
+      sessionsSelectedBranchByProject[projectId] ?? sessionsDefaultBranchByProject[projectId] ?? "main";
+    setSessionsSelectedBranchByProject((current) => ({
+      ...current,
+      [projectId]: branchName
+    }));
+  };
+
+  const getSessionsBranchTarget = (projectId: string, branchName: string) => {
+    const existingBinding = [...sessionTabs]
+      .reverse()
+      .map((tab) => sessionsBranchBindingsByTabId[tab.id] ?? null)
+      .find(
+        (binding) =>
+          binding?.projectId === projectId &&
+          binding.branchName === branchName
+      );
+
+    if (existingBinding) {
+      return existingBinding;
+    }
+
+    const projectServer =
+      servers.find((server) => server.projectId === projectId && server.isFavorite) ??
+      servers.find((server) => server.projectId === projectId) ??
+      null;
+
+    if (projectServer) {
+      return {
+        projectId,
+        branchName,
+        targetKind: "server" as const,
+        serverId: projectServer.id,
+        cwd: null,
+        label: serverDisplayLabel(projectServer)
+      };
+    }
+
+    const project = projects.find((candidate) => candidate.id === projectId) ?? null;
+    const repository = project ? findProjectRepository(project, gitRepositories) : null;
+
+    return {
+      projectId,
+      branchName,
+      targetKind: "local" as const,
+      serverId: null,
+      cwd: repository?.path ?? null,
+      label: project ? `${project.name} / ${branchName}` : branchName
+    };
+  };
+
+  const createTerminalForSessionsBranch = async (projectId: string, branchName: string) => {
+    const target = getSessionsBranchTarget(projectId, branchName);
+    if (!target) {
+      return null;
+    }
+
+    if (target.targetKind === "server" && target.serverId) {
+      const tab = await handleConnect(target.serverId, undefined, "sessions", true);
+      if (tab) {
+        bindTabToSessionsBranch(tab.id, projectId, branchName, {
+          targetKind: "server",
+          serverId: target.serverId,
+          cwd: null,
+          label: target.label
+        });
+      }
+      return tab;
+    }
+
+    const tab = await handleConnectLocal({
+      cwd: target.cwd ?? undefined,
+      label: target.label ?? undefined
+    });
+    if (tab) {
+      bindTabToSessionsBranch(tab.id, projectId, branchName, {
+        targetKind: "local",
+        serverId: null,
+        cwd: target.cwd,
+        label: target.label
+      });
+    }
+    return tab;
+  };
+
+  const handleSelectSessionsBranch = async (branchName: string) => {
+    if (!sessionsProjectId) {
+      return;
+    }
+
+    setSessionsSelectedBranchByProject((current) => ({
+      ...current,
+      [sessionsProjectId]: branchName
+    }));
+
+    const existingTab = sessionTabs
+      .filter((tab) => {
+        const binding = sessionsBranchBindingsByTabId[tab.id];
+        return binding?.projectId === sessionsProjectId && binding.branchName === branchName;
+      })
+      .at(-1);
+
+    if (existingTab) {
+      handleOpenTerminalSession(existingTab.id);
+      return;
+    }
+
+    await createTerminalForSessionsBranch(sessionsProjectId, branchName);
+  };
+
+  const restoreSessionsContext = () => {
+    if (sessionsProjectId) {
+      return;
+    }
+
+    const sourceTab = activeSessionTab ?? sessionTabs.at(-1) ?? null;
+    if (!sourceTab) {
+      return;
+    }
+
+    const branchBinding = sessionsBranchBindingsByTabId[sourceTab.id];
+    if (branchBinding) {
+      setSessionsProjectId(branchBinding.projectId);
+      setSessionsSelectedBranchByProject((current) => ({
+        ...current,
+        [branchBinding.projectId]: branchBinding.branchName
+      }));
+      return;
+    }
+
+    const server = servers.find((candidate) => candidate.id === sourceTab.serverId) ?? null;
+    if (!server) {
+      return;
+    }
+
+    const branchName =
+      sessionsSelectedBranchByProject[server.projectId] ??
+      sessionsDefaultBranchByProject[server.projectId] ??
+      "main";
+
+    setSessionsProjectId(server.projectId);
+    setSessionsSelectedBranchByProject((current) => ({
+      ...current,
+      [server.projectId]: branchName
+    }));
+  };
+
   const handleNavigate = (nextView: ViewState) => {
+    if (nextView === "sessions" && view !== "sessions") {
+      restoreSessionsContext();
+    }
     setView(nextView);
   };
 
@@ -3268,6 +3508,142 @@ export function App() {
     });
   };
 
+  const handleConnectLocalForSessionsBranch = async (input?: ConnectLocalSessionInput) => {
+    const tab = await handleConnectLocal(input);
+    if (tab && sessionsProjectId && sessionsSelectedBranchName) {
+      bindTabToSessionsBranch(tab.id, sessionsProjectId, sessionsSelectedBranchName, {
+        targetKind: "local",
+        serverId: null,
+        cwd: input?.cwd ?? tab.cwd,
+        label: input?.label ?? tab.title
+      });
+    }
+    return tab;
+  };
+
+  const handleConnectServerForSessionsBranch = async (serverId: string, tmuxSession?: string) => {
+    const tab = await handleConnect(serverId, tmuxSession, "sessions", true);
+    if (tab && sessionsProjectId && sessionsSelectedBranchName) {
+      const server = servers.find((candidate) => candidate.id === serverId) ?? null;
+      bindTabToSessionsBranch(tab.id, sessionsProjectId, sessionsSelectedBranchName, {
+        targetKind: "server",
+        serverId,
+        cwd: null,
+        label: server ? serverDisplayLabel(server) : tab.title
+      });
+    }
+    return tab;
+  };
+
+  const handleLaunchLocalPresetForSessionsBranch = async (presetId: string) => {
+    const preset = localSessionPresets.find((candidate) => candidate.id === presetId);
+    if (!preset) {
+      return;
+    }
+
+    const tab = await handleConnectLocal({
+      cwd: preset.path,
+      label: preset.name
+    });
+    if (tab && sessionsProjectId && sessionsSelectedBranchName) {
+      bindTabToSessionsBranch(tab.id, sessionsProjectId, sessionsSelectedBranchName, {
+        targetKind: "local",
+        serverId: null,
+        cwd: preset.path,
+        label: preset.name
+      });
+    }
+  };
+
+  const handleCreateSessionsBranchTerminal = async () => {
+    if (sessionsProjectId && sessionsSelectedBranchName) {
+      await createTerminalForSessionsBranch(sessionsProjectId, sessionsSelectedBranchName);
+      return;
+    }
+
+    await handleConnectLocal();
+  };
+
+  const getSessionsProjectRepository = (projectId: string | null) => {
+    if (!projectId) {
+      return null;
+    }
+
+    const project = projects.find((candidate) => candidate.id === projectId) ?? null;
+    return project ? findProjectRepository(project, gitRepositories) : null;
+  };
+
+  const handleCreateSessionsGitBranch = async () => {
+    const repository = getSessionsProjectRepository(sessionsProjectId);
+    if (!sessionsProjectId || !repository) {
+      pushToast("Connect a project repository before creating a branch.", "info");
+      return;
+    }
+
+    const suggestedName =
+      sessionsSelectedBranchName && sessionsSelectedBranchName !== "main"
+        ? `${sessionsSelectedBranchName}-next`
+        : "feature/";
+    const branchName = window.prompt("New branch name", suggestedName)?.trim() ?? "";
+    if (!branchName) {
+      return;
+    }
+
+    const snapshot = await createGitBranchForRepository(repository.id, branchName);
+    if (!snapshot) {
+      return;
+    }
+
+    setSessionsSelectedBranchByProject((current) => ({
+      ...current,
+      [sessionsProjectId]: snapshot.branch
+    }));
+    await handleSelectSessionsBranch(snapshot.branch);
+  };
+
+  const handleCommitSessionsGitBranch = async () => {
+    const repository = getSessionsProjectRepository(sessionsProjectId);
+    if (!repository) {
+      pushToast("Connect a project repository before committing.", "info");
+      return;
+    }
+
+    const message = window.prompt("Commit message", gitCommitMessage || "")?.trim() ?? "";
+    if (!message) {
+      return;
+    }
+
+    await commitGitRepositoryWithMessage(repository.id, message);
+  };
+
+  const handlePushSessionsGitBranch = async () => {
+    const repository = getSessionsProjectRepository(sessionsProjectId);
+    if (!repository) {
+      pushToast("Connect a project repository before pushing.", "info");
+      return;
+    }
+
+    await handlePushGitRepository(repository.id);
+  };
+
+  const handleCopySessionsPrDraft = async () => {
+    const repository = getSessionsProjectRepository(sessionsProjectId);
+    if (!repository) {
+      pushToast("Connect a project repository before preparing a PR.", "info");
+      return;
+    }
+
+    await handleCopyGitReviewDraft(repository.id);
+  };
+
+  const handlePullSessionsGitBranch = () => {
+    pushToast("Pull is not wired into Sessions yet.", "info");
+  };
+
+  const handleMergeSessionsGitBranch = () => {
+    pushToast("Merge is not wired into Sessions yet.", "info");
+  };
+
   const handleRemoveLocalPreset = (presetId: string) => {
     setLocalSessionPresets((current) => current.filter((preset) => preset.id !== presetId));
   };
@@ -3629,47 +4005,63 @@ export function App() {
     }
   };
 
-  const handleCommitGitRepository = async (repositoryId: string) => {
+  const commitGitRepositoryWithMessage = async (repositoryId: string, message: string) => {
     const repository = gitRepositories.find((candidate) => candidate.id === repositoryId);
     if (!repository) {
-      return;
+      return null;
     }
 
     setGitBusyAction(`commit:${repositoryId}`);
     try {
       const snapshot = await commitGitRepository(
         repository.snapshot?.rootPath ?? repository.path,
-        gitCommitMessage
+        message
       );
       syncGitRepositorySnapshot(repositoryId, snapshot);
-      setGitCommitMessage("");
       pushToast(`Committed ${snapshot.name}.`, "success");
+      return snapshot;
     } catch (error) {
       pushToast(getErrorMessage(error), "error");
+      return null;
     } finally {
       setGitBusyAction(null);
     }
   };
 
-  const handleCreateGitBranch = async (repositoryId: string) => {
+  const handleCommitGitRepository = async (repositoryId: string) => {
+    const snapshot = await commitGitRepositoryWithMessage(repositoryId, gitCommitMessage);
+    if (snapshot) {
+      setGitCommitMessage("");
+    }
+  };
+
+  const createGitBranchForRepository = async (repositoryId: string, branchName: string) => {
     const repository = gitRepositories.find((candidate) => candidate.id === repositoryId);
     if (!repository) {
-      return;
+      return null;
     }
 
     setGitBusyAction(`branch:${repositoryId}`);
     try {
       const snapshot = await createGitBranch(
         repository.snapshot?.rootPath ?? repository.path,
-        gitBranchName
+        branchName
       );
       syncGitRepositorySnapshot(repositoryId, snapshot);
-      setGitBranchName("");
       pushToast(`Checked out ${snapshot.branch}.`, "success");
+      return snapshot;
     } catch (error) {
       pushToast(getErrorMessage(error), "error");
+      return null;
     } finally {
       setGitBusyAction(null);
+    }
+  };
+
+  const handleCreateGitBranch = async (repositoryId: string) => {
+    const snapshot = await createGitBranchForRepository(repositoryId, gitBranchName);
+    if (snapshot) {
+      setGitBranchName("");
     }
   };
 
@@ -3736,6 +4128,15 @@ export function App() {
     const tab = tabs.find((candidate) => candidate.id === tabId);
     if (!tab) {
       return;
+    }
+
+    const branchBinding = sessionsBranchBindingsByTabId[tabId];
+    if (branchBinding) {
+      setSessionsProjectId(branchBinding.projectId);
+      setSessionsSelectedBranchByProject((current) => ({
+        ...current,
+        [branchBinding.projectId]: branchBinding.branchName
+      }));
     }
 
     const server = servers.find((candidate) => candidate.id === tab.serverId);
@@ -3863,6 +4264,15 @@ export function App() {
     const nextTabs = tabs.filter((tab) => tab.id !== tabId);
     clearTerminalInput(tabId);
     pendingTerminalStatesRef.current.delete(tabId);
+    setSessionsBranchBindingsByTabId((current) => {
+      if (!(tabId in current)) {
+        return current;
+      }
+
+      const next = { ...current };
+      delete next[tabId];
+      return next;
+    });
     if (relayInstallSessionId === tabId) {
       setRelayInstallSessionId(null);
     }
@@ -3972,8 +4382,8 @@ export function App() {
   };
 
   const headerTitle =
-    view === "workspace" && selectedProject
-      ? projectDisplayLabel(selectedProject)
+    view === "workspace"
+      ? "Connections"
       : view === "git" && gitToolbarContext.headerTitle
         ? gitToolbarContext.headerTitle
       : view === "sessions"
@@ -3989,14 +4399,16 @@ export function App() {
         : "Home";
 
   const headerSubtitle =
-    view === "sessions" && activeSessionTabServer
-      ? `${sessionTabs.length} live terminal${sessionTabs.length === 1 ? "" : "s"} / ${buildSshTarget(activeSessionTabServer)} / port ${activeSessionTabServer.port}`
+    view === "sessions" && activeSessionsWorkspaceTabServer
+      ? `${sessionsWorkspaceTabs.length} live terminal${sessionsWorkspaceTabs.length === 1 ? "" : "s"} / ${buildSshTarget(activeSessionsWorkspaceTabServer)} / port ${activeSessionsWorkspaceTabServer.port}`
       : view === "sessions"
-        ? `${sessionTabs.length} active terminal${sessionTabs.length === 1 ? "" : "s"}`
+        ? `${sessionsWorkspaceTabs.length} active terminal${sessionsWorkspaceTabs.length === 1 ? "" : "s"}`
       : view === "workspace" && workspaceMode === "terminal" && selectedServer
-      ? `${buildSshTarget(selectedServer)} / port ${selectedServer.port}${selectedServer.useTmux ? ` / tmux ${selectedServer.tmuxSession}` : ""}`
+      ? `${selectedProject ? `${projectDisplayLabel(selectedProject)} / ` : ""}${buildSshTarget(selectedServer)} / port ${selectedServer.port}${selectedServer.useTmux ? ` / tmux ${selectedServer.tmuxSession}` : ""}`
       : view === "workspace"
-        ? "Servers, live sessions, and tmux reconnects"
+        ? selectedProject
+          ? `${projectDisplayLabel(selectedProject)} / Servers, live sessions, and tmux reconnects`
+          : "Servers, live sessions, and tmux reconnects"
         : view === "git" && gitToolbarContext.headerTitle
           ? gitToolbarContext.headerSubtitle ?? ""
         : view === "git"
@@ -4067,23 +4479,7 @@ export function App() {
           <Plus size={15} weight="bold" />
         </button>
       </div>
-    ) : view === "sessions" ? (
-      <div className="shell-action-group">
-        <ShellAction
-          icon={Laptop}
-          label="Local device"
-          onClick={() => void handleConnectLocal()}
-          tone="primary"
-        />
-        <ShellAction
-          icon={DesktopTower}
-          label="Saved server"
-          onClick={() => setSessionLauncherOpen(true)}
-        />
-        <ShellAction icon={FolderPlus} label="Save path" onClick={openLocalSessionPresetEditor} />
-        <ShellAction icon={ArrowCircleUp} label="Updates" onClick={openToolUpdates} />
-      </div>
-    ) : view === "workspace" ? (
+    ) : view === "sessions" ? null : view === "workspace" ? (
       <div className="shell-action-group">
         <ShellAction icon={DesktopTower} label="New server" onClick={openCreateServer} tone="primary" />
         <ShellAction icon={TerminalWindow} label="Sessions" onClick={() => setView("sessions")} />
@@ -4224,13 +4620,45 @@ export function App() {
         }
         layoutMode={shellLayoutMode}
         rail={<AppRail onNavigate={handleNavigate} view={view} />}
+        secondaryRail={
+          view === "sessions" && sessionsProjectId ? (
+            <SessionNavigator
+              activeTabId={activeSessionsWorkspaceTab?.id ?? null}
+              selectedBranchName={sessionsSelectedBranchName}
+              gitRepositories={gitRepositories}
+              localSessionPresets={localSessionPresets}
+              onOpenProjectSettings={handleOpenProject}
+              onLaunchLocalPreset={(presetId) => void handleLaunchLocalPresetForSessionsBranch(presetId)}
+              onOpenPresetEditor={openLocalSessionPresetEditor}
+              onOpenSessionLauncher={() => setSessionLauncherOpen(true)}
+              onCreateGitBranch={() => void handleCreateSessionsGitBranch()}
+              onCommitGitBranch={() => void handleCommitSessionsGitBranch()}
+              onCopyPrDraft={() => void handleCopySessionsPrDraft()}
+              onMergeBranch={handleMergeSessionsGitBranch}
+              onPullBranch={handlePullSessionsGitBranch}
+              onSelectBranch={(branchName) => void handleSelectSessionsBranch(branchName)}
+              onSelectProject={handleSelectSessionsProject}
+              onSelectTab={handleOpenTerminalSession}
+              onStartLocalSession={() => void handleConnectLocalForSessionsBranch()}
+              onPushGitBranch={() => void handlePushSessionsGitBranch()}
+              projects={projects}
+              selectedProjectId={sessionsProjectId}
+              servers={servers}
+              tabs={sessionsWorkspaceTabs}
+            />
+          ) : undefined
+        }
+        secondaryRailLabel="Session navigator"
       >
         <AppStage
-          activeTabId={view === "sessions" ? activeSessionTab?.id ?? null : activeTabId}
+          activeTabId={view === "sessions" ? activeSessionsWorkspaceTab?.id ?? null : activeTabId}
           activeTheme={activeTheme}
           devicePlatform={devicePlatform}
           favoriteServers={favoriteServers}
           gitRepositories={gitRepositories}
+          sessionsSelectedBranchName={sessionsSelectedBranchName}
+          sessionsSelectedProjectId={sessionsProjectId}
+          sessionsTabs={sessionsWorkspaceTabs}
           filteredKeychainItems={filteredKeychainItems}
           filteredProjects={filteredProjects}
           gitBranchName={gitBranchName}
@@ -4306,7 +4734,11 @@ export function App() {
           onNotify={pushToast}
           onOpenGitRepositoryShell={(repositoryId) => void handleOpenGitRepositoryShell(repositoryId)}
           localSessionPresets={localSessionPresets}
-          onLaunchLocalPreset={(presetId) => void handleLaunchLocalPreset(presetId)}
+          onLaunchLocalPreset={(presetId) =>
+            view === "sessions"
+              ? void handleLaunchLocalPresetForSessionsBranch(presetId)
+              : void handleLaunchLocalPreset(presetId)
+          }
           onOpenSessionLauncher={() => setSessionLauncherOpen(true)}
           onOpenTerminalSession={handleOpenTerminalSession}
           onOpenProject={handleOpenProject}
@@ -4366,9 +4798,15 @@ export function App() {
           }}
           onSearchChange={setSearch}
           onSelectGitRepository={setSelectedGitRepositoryId}
+          onSelectSessionsBranch={(branchName) => void handleSelectSessionsBranch(branchName)}
+          onSelectSessionsProject={handleSelectSessionsProject}
           onSelectServer={handleSelectServer}
           onSelectTab={handleOpenTerminalSession}
-          onStartLocalSession={() => void handleConnectLocal()}
+          onStartLocalSession={() =>
+            view === "sessions"
+              ? void handleCreateSessionsBranchTerminal()
+              : void handleConnectLocal()
+          }
           onTerminalFontSizeChange={(value) =>
             updateSettings((current) => ({
               ...current,
@@ -4854,6 +5292,19 @@ function buildGitReviewDraft(repository: GitRepositoryRecord) {
 function normalizeTerminalCommandInput(command: string) {
   const withoutTrailingBreaks = command.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n+$/u, "");
   return `${withoutTrailingBreaks.replace(/\n/g, "\r")}\r`;
+}
+
+function findProjectRepository(project: ProjectRecord, repositories: GitRepositoryView[]) {
+  const projectName = normalizeProjectRepositoryKey(project.name);
+  return (
+    repositories.find((repository) => normalizeProjectRepositoryKey(repository.name) === projectName) ??
+    repositories.find((repository) => normalizeProjectRepositoryKey(repository.path).includes(projectName)) ??
+    null
+  );
+}
+
+function normalizeProjectRepositoryKey(value: string) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-");
 }
 
 function getTerminalSurface(tab: TerminalTab) {

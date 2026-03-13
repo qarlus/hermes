@@ -101,5 +101,6 @@ The current relay is an early foundation for that model, not the finished sync e
 - [Architecture](./docs/architecture.md)
 - [Key decisions](./docs/decisions.md)
 - [Roadmap](./docs/roadmap.md)
+- [Iris terminal brief](./docs/iris/engineering-brief.md)
 - [Changelog](./CHANGELOG.md)
 - [Current implementation notes](./plan.md)

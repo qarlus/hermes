@@ -1,5 +1,6 @@
 import type { ComponentType } from "react";
 import {
+  DesktopTower,
   FolderSimple,
   GearSix,
   GitBranch,
@@ -27,6 +28,7 @@ type RailItemConfig = {
 const RAIL_ITEMS: RailItemConfig[] = [
   { icon: House, label: "Home", title: "Home", view: "dashboard" },
   { icon: TerminalWindow, label: "Sessions", title: "Sessions", view: "sessions" },
+  { icon: DesktopTower, label: "Connections", title: "Connections", view: "workspace" },
   { icon: Key, label: "Keychain", title: "Keychain", view: "keychain" },
   { icon: GitBranch, label: "Git", title: "Git", view: "git" },
   { icon: FolderSimple, label: "Files", title: "Files", view: "files" },

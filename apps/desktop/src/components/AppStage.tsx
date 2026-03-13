@@ -12,13 +12,12 @@ import type {
   TerminalTab,
   TmuxSessionRecord
 } from "@hermes/core";
-import { ArrowUpCircle, FolderPlus, Laptop, Server } from "lucide-react";
 import HostDashboard from "../features/dashboard/HostDashboard";
 import { FileBrowserPage } from "../features/files/FileBrowserPage";
 import { GitPage, type GitRepositoryView, type GitToolbarContext } from "../features/git/GitPage";
 import { KeychainPage } from "../features/keychain/KeychainPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
-import { SessionCommandRail } from "../features/sessions/SessionCommandRail";
+import { SessionsWorkspace } from "../features/sessions/SessionsWorkspace";
 import { TerminalWorkspace } from "../features/tabs/TerminalWorkspace";
 import { WorkspaceHome } from "../features/workspace/WorkspaceHome";
 import type { ViewState } from "../lib/app";
@@ -47,6 +46,9 @@ type AppStageProps = {
   servers: ServerRecord[];
   filteredKeychainItems: KeychainItemRecord[];
   gitRepositories: GitRepositoryView[];
+  sessionsSelectedProjectId: string | null;
+  sessionsSelectedBranchName: string | null;
+  sessionsTabs: TerminalTab[];
   projectServers: ServerRecord[];
   serverCountByProject: Record<string, number>;
   tmuxLoading: boolean;
@@ -122,6 +124,8 @@ type AppStageProps = {
   onCreateTerminalCommand: (input: { name: string; command: string }) => void;
   onDeleteTerminalCommand: (id: string) => void;
   onRunTerminalCommand: (command: string) => void;
+  onSelectSessionsProject: (projectId: string) => void;
+  onSelectSessionsBranch: (branchName: string) => void;
   onNewTab?: () => void;
   onOpenSessionLauncher?: () => void;
   localSessionPresets: Array<{
@@ -171,6 +175,9 @@ export function AppStage({
   servers,
   filteredKeychainItems,
   gitRepositories,
+  sessionsSelectedProjectId,
+  sessionsSelectedBranchName,
+  sessionsTabs,
   projectServers,
   serverCountByProject,
   tmuxLoading,
@@ -246,6 +253,8 @@ export function AppStage({
   onCreateTerminalCommand,
   onDeleteTerminalCommand,
   onRunTerminalCommand,
+  onSelectSessionsProject,
+  onSelectSessionsBranch,
   onNewTab,
   onOpenSessionLauncher,
   localSessionPresets,
@@ -274,53 +283,41 @@ export function AppStage({
   onImportSyncBundle,
   onNotify
 }: AppStageProps) {
-  const sessionsEmptyState = (
-    <div className="workspace__empty workspace__content">
-      <p>No terminal open</p>
-      <span>Start a shell on this device or open a saved server from any workspace.</span>
-      <div className="workspace__empty-actions">
-        <button className="primary-button" onClick={onStartLocalSession} type="button">
-          <Laptop size={14} />
-          Local device
-        </button>
-        <button className="ghost-button" onClick={onOpenSessionLauncher} type="button">
-          <Server size={14} />
-          Saved server
-        </button>
-        <button className="ghost-button" onClick={onOpenPresetEditor} type="button">
-          <FolderPlus size={14} />
-          Save path shortcut
-        </button>
-        <button className="ghost-button" onClick={onOpenToolUpdates} type="button">
-          <ArrowUpCircle size={14} />
-          Tool updates
-        </button>
+  if (view === "sessions") {
+    return (
+      <div className={`${stageClassName} stage--sessions`}>
+        <SessionsWorkspace
+          activeTabId={activeTabId}
+          activeTerminalLabel={activeTerminalLabel}
+          favoriteServers={favoriteServers}
+          gitRepositories={gitRepositories}
+          localSessionPresets={localSessionPresets}
+          onCloseTab={onCloseTab}
+          onCreateTerminalCommand={onCreateTerminalCommand}
+          onDeleteTerminalCommand={onDeleteTerminalCommand}
+          onExit={onExit}
+          onInput={onInput}
+          onLaunchLocalPreset={onLaunchLocalPreset}
+          onOpenPresetEditor={onOpenPresetEditor ?? (() => undefined)}
+          onOpenSessionLauncher={onOpenSessionLauncher ?? (() => undefined)}
+          onResize={onResize}
+          onRunTerminalCommand={onRunTerminalCommand}
+          onSelectProject={onSelectSessionsProject}
+          onSelectTab={onSelectTab}
+          onStartLocalSession={onStartLocalSession ?? (() => undefined)}
+          onStatus={onStatus}
+          projects={filteredProjects}
+          selectedBranchName={sessionsSelectedBranchName}
+          selectedProjectId={sessionsSelectedProjectId}
+          servers={servers}
+          tabs={sessionsTabs}
+          terminalCommands={terminalCommands}
+          terminalFontSize={settings.terminalFontSize}
+          terminalTheme={activeTheme.terminal}
+        />
       </div>
-      {localSessionPresets.length > 0 ? (
-        <div className="workspace__empty-preset-list">
-          {localSessionPresets.map((preset) => (
-            <div className="session-preset-chip" key={preset.id}>
-              <button
-                className="session-preset-chip__launch"
-                onClick={() => onLaunchLocalPreset(preset.id)}
-                type="button"
-              >
-                {preset.name}
-              </button>
-              <button
-                aria-label={`Remove ${preset.name}`}
-                className="session-preset-chip__remove"
-                onClick={() => onRemoveLocalPreset(preset.id)}
-                type="button"
-              >
-                x
-              </button>
-            </div>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
+    );
+  }
 
   return (
     <div className={stageClassName}>
@@ -328,9 +325,7 @@ export function AppStage({
         activeTabId={activeTabId}
         emptyTabsLabel={null}
         emptyState={
-          view === "sessions" ? (
-            sessionsEmptyState
-          ) : view === "workspace" && selectedProject ? (
+          view === "workspace" && selectedProject ? (
             <WorkspaceHome
               activeSessions={workspaceTabs}
               onConnect={onConnect}
@@ -460,25 +455,13 @@ export function AppStage({
         onExit={onExit}
         onInput={onInput}
         onNewTab={onNewTab}
-        rightRail={
-          view === "sessions" ? (
-            <SessionCommandRail
-              activeTerminalLabel={activeTerminalLabel}
-              canRunCommands={Boolean(activeTabId && tabs.some((tab) => tab.id === activeTabId && tab.status !== "closed" && tab.status !== "error"))}
-              commands={terminalCommands}
-              onCreateCommand={onCreateTerminalCommand}
-              onDeleteCommand={onDeleteTerminalCommand}
-              onRunCommand={onRunTerminalCommand}
-            />
-          ) : null
-        }
         onResize={onResize}
         onSelectTab={onSelectTab}
         onStatus={onStatus}
         terminalTheme={activeTheme.terminal}
         terminalFontSize={settings.terminalFontSize}
         tabs={tabs}
-        visible={view === "sessions" || (view === "workspace" && workspaceMode === "terminal")}
+        visible={view === "workspace" && workspaceMode === "terminal"}
       />
     </div>
   );

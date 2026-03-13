@@ -14,7 +14,13 @@ import { isTauriRuntime } from "../../lib/runtime";
 interface TerminalWorkspaceProps {
   tabs: TerminalTab[];
   activeTabId: string | null;
+  hostVariant?: "page" | "pane";
   visible?: boolean;
+  showTabs?: boolean;
+  multiPane?: boolean;
+  visibleTabIds?: string[];
+  multiPaneColumns?: number;
+  multiPaneRows?: number;
   terminalFontSize: number;
   terminalTheme: {
     background: string;
@@ -61,7 +67,13 @@ interface TerminalHandle {
 export function TerminalWorkspace({
   tabs,
   activeTabId,
+  hostVariant = "page",
   visible = true,
+  showTabs = true,
+  multiPane = false,
+  visibleTabIds,
+  multiPaneColumns = 2,
+  multiPaneRows = 1,
   terminalFontSize,
   terminalTheme,
   emptyState,
@@ -81,6 +93,25 @@ export function TerminalWorkspace({
   const buffersRef = useRef<Map<string, string[]>>(new Map());
   const onExitRef = useRef(onExit);
   const onStatusRef = useRef(onStatus);
+  const rootClassName = hostVariant === "pane" ? "pane-terminal-host" : "workspace";
+  const bodyClassName =
+    hostVariant === "pane"
+      ? "pane-terminal-host__body"
+      : `workspace__body ${rightRail ? "workspace__body--with-rail" : ""} ${
+          rightRailVariant === "relay" ? "workspace__body--with-rail-relay" : ""
+        } ${rightRailOpen ? "workspace__body--with-rail-open" : ""}`;
+  const mainClassName = hostVariant === "pane" ? "pane-terminal-host__main" : "workspace__main";
+  const terminalsClassName =
+    hostVariant === "pane"
+      ? `pane-terminal-host__terminals ${visible && tabs.length > 0 ? "" : "pane-terminal-host__terminals--hidden"} ${
+          multiPane ? "pane-terminal-host__terminals--grid" : ""
+        }`
+      : `workspace__terminals ${visible && tabs.length > 0 ? "" : "workspace__terminals--hidden"} ${
+          multiPane ? "workspace__terminals--grid" : ""
+        }`;
+
+  const visibleSet = visibleTabIds ? new Set(visibleTabIds) : null;
+  const renderedTabs = multiPane && visibleSet ? tabs.filter((tab) => visibleSet.has(tab.id)) : tabs;
 
   useEffect(() => {
     onExitRef.current = onExit;
@@ -152,8 +183,8 @@ export function TerminalWorkspace({
   }, [activeTabId, tabs.length]);
 
   return (
-    <section className="workspace">
-      {visible && (tabs.length > 0 || emptyTabsLabel || onNewTab) ? (
+    <section className={rootClassName}>
+      {showTabs && visible && (tabs.length > 0 || emptyTabsLabel || onNewTab) ? (
         <div className="workspace__tabs">
           {tabs.length === 0 && emptyTabsLabel ? (
             <div className="workspace__tabs-empty">{emptyTabsLabel}</div>
@@ -200,15 +231,11 @@ export function TerminalWorkspace({
         </div>
       ) : null}
 
-      <div
-        className={`workspace__body ${rightRail ? "workspace__body--with-rail" : ""} ${
-          rightRailVariant === "relay" ? "workspace__body--with-rail-relay" : ""
-        } ${rightRailOpen ? "workspace__body--with-rail-open" : ""}`}
-      >
-        <div className="workspace__main">
+      <div className={bodyClassName}>
+        <div className={mainClassName}>
           {!visible || tabs.length === 0 ? (
             emptyState ?? (
-              <div className="workspace__empty workspace__content">
+              <div className={hostVariant === "pane" ? "pane-terminal-host__empty pane-terminal-host__content" : "workspace__empty workspace__content"}>
                 <p>No terminal open</p>
                 <span>Open a saved server to start a tmux-aware SSH session.</span>
               </div>
@@ -216,15 +243,22 @@ export function TerminalWorkspace({
           ) : null}
 
           <div
-            className={`workspace__terminals ${
-              visible && tabs.length > 0 ? "" : "workspace__terminals--hidden"
-            }`}
+            className={terminalsClassName}
+            style={
+              multiPane
+                ? {
+                    gridTemplateColumns: `repeat(${multiPaneColumns}, minmax(0, 1fr))`,
+                    gridTemplateRows: `repeat(${multiPaneRows}, minmax(0, 1fr))`
+                  }
+                : undefined
+            }
           >
-            {tabs.map((tab) => (
+            {renderedTabs.map((tab) => (
               <TerminalPane
-                active={visible && tab.id === activeTabId}
+                focused={visible && tab.id === activeTabId}
                 key={tab.id}
                 sessionId={tab.id}
+                visible={multiPane || (visible && tab.id === activeTabId)}
                 onInput={onInput}
                 onReady={(handle) => {
                   handlesRef.current.set(tab.id, handle);
@@ -283,7 +317,8 @@ function formatTabStatus(status: TerminalTab["status"]) {
 }
 
 interface TerminalPaneProps {
-  active: boolean;
+  visible: boolean;
+  focused: boolean;
   sessionId: string;
   terminalFontSize: number;
   terminalTheme: TerminalWorkspaceProps["terminalTheme"];
@@ -294,7 +329,8 @@ interface TerminalPaneProps {
 }
 
 function TerminalPane({
-  active,
+  visible,
+  focused,
   sessionId,
   terminalFontSize,
   terminalTheme,
@@ -305,7 +341,7 @@ function TerminalPane({
 }: TerminalPaneProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const handleRef = useRef<TerminalHandle | null>(null);
-  const activeRef = useRef(active);
+  const activeRef = useRef(focused);
   const lastSizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const syncTimersRef = useRef<number[]>([]);
   const onInputRef = useRef(onInput);
@@ -314,8 +350,8 @@ function TerminalPane({
   const onTeardownRef = useRef(onTeardown);
 
   useEffect(() => {
-    activeRef.current = active;
-  }, [active]);
+    activeRef.current = focused;
+  }, [focused]);
 
   useEffect(() => {
     onInputRef.current = onInput;
@@ -426,7 +462,7 @@ function TerminalPane({
 
   useEffect(() => {
     const currentHandle = handleRef.current;
-    if (!active || !currentHandle) {
+    if (!visible || !currentHandle) {
       return;
     }
 
@@ -447,12 +483,14 @@ function TerminalPane({
         lastSizeRef.current = nextSize;
         onResizeRef.current(sessionId, nextSize.cols, nextSize.rows);
       }
-      nextHandle.terminal.focus();
+      if (focused) {
+        nextHandle.terminal.focus();
+      }
     });
-  }, [active, sessionId]);
+  }, [focused, sessionId, visible]);
 
   return (
-    <div className={`terminal-pane ${active ? "terminal-pane--active" : ""}`}>
+    <div className={`terminal-pane ${visible ? "terminal-pane--active" : ""}`}>
       <div className="terminal-pane__surface" ref={hostRef} />
     </div>
   );
