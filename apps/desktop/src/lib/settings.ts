@@ -162,13 +162,20 @@ export type HermesSyncBundle = {
     id: string;
     name: string;
     description: string;
+    path: string;
+    targetKind: "local" | "server";
+    linkedServerId: string | null;
+    githubRepoFullName: string;
+    githubDefaultBranch: string;
   }>;
   servers: Array<{
+    id: string;
     projectId: string;
     name: string;
     hostname: string;
     port: number;
     username: string;
+    path: string;
     authKind: ServerAuthKind;
     credentialName: string | null;
     isFavorite: boolean;
@@ -934,14 +941,21 @@ export function buildHermesSyncBundle(input: {
     projects: input.projects.map((project) => ({
       id: project.id,
       name: project.name,
-      description: project.description
+      description: project.description,
+      path: project.path,
+      targetKind: project.targetKind,
+      linkedServerId: project.linkedServerId,
+      githubRepoFullName: project.githubRepoFullName,
+      githubDefaultBranch: project.githubDefaultBranch
     })),
     servers: input.servers.map((server) => ({
+      id: server.id,
       projectId: server.projectId,
       name: server.name,
       hostname: server.hostname,
       port: server.port,
       username: server.username,
+      path: server.path,
       authKind: server.authKind,
       credentialName: server.credentialName,
       isFavorite: server.isFavorite,
@@ -1015,8 +1029,19 @@ export function parseHermesSyncBundle(
         : parsed.settings === null
           ? null
           : sanitizeHermesSettings(parsed.settings, platform),
-    projects: parsed.projects,
-    servers: parsed.servers,
+    projects: parsed.projects.map((project) => ({
+      ...project,
+      path: project.path ?? "",
+      targetKind: project.targetKind === "server" ? "server" : "local",
+      linkedServerId: project.linkedServerId ?? null,
+      githubRepoFullName: project.githubRepoFullName ?? "",
+      githubDefaultBranch: project.githubDefaultBranch ?? "main"
+    })),
+    servers: parsed.servers.map((server) => ({
+      ...server,
+      id: server.id ?? "",
+      path: server.path ?? ""
+    })),
     localSessionPresets: parsed.localSessionPresets,
     localGitRepositories:
       parsed.version === 1
@@ -1141,7 +1166,12 @@ function isSyncProjectRecord(
   return (
     typeof value.id === "string" &&
     typeof value.name === "string" &&
-    typeof value.description === "string"
+    typeof value.description === "string" &&
+    (typeof value.path === "string" || typeof value.path === "undefined") &&
+    (value.targetKind === "local" || value.targetKind === "server" || typeof value.targetKind === "undefined") &&
+    (typeof value.linkedServerId === "string" || value.linkedServerId === null || typeof value.linkedServerId === "undefined") &&
+    (typeof value.githubRepoFullName === "string" || typeof value.githubRepoFullName === "undefined") &&
+    (typeof value.githubDefaultBranch === "string" || typeof value.githubDefaultBranch === "undefined")
   );
 }
 
@@ -1154,10 +1184,12 @@ function isSyncServerRecord(
 
   return (
     typeof value.projectId === "string" &&
+    (typeof value.id === "string" || typeof value.id === "undefined") &&
     typeof value.name === "string" &&
     typeof value.hostname === "string" &&
     typeof value.port === "number" &&
     typeof value.username === "string" &&
+    (typeof value.path === "string" || typeof value.path === "undefined") &&
     typeof value.authKind === "string" &&
     (typeof value.credentialName === "string" || value.credentialName === null) &&
     typeof value.isFavorite === "boolean" &&

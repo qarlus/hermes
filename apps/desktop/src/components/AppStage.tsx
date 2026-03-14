@@ -16,10 +16,10 @@ import HostDashboard from "../features/dashboard/HostDashboard";
 import { FileBrowserPage } from "../features/files/FileBrowserPage";
 import { GitPage, type GitRepositoryView, type GitToolbarContext } from "../features/git/GitPage";
 import { KeychainPage } from "../features/keychain/KeychainPage";
+import { ProjectsWorkspace } from "../features/projects/ProjectsWorkspace";
 import { SettingsPage } from "../features/settings/SettingsPage";
 import { SessionsWorkspace } from "../features/sessions/SessionsWorkspace";
 import { TerminalWorkspace } from "../features/tabs/TerminalWorkspace";
-import { WorkspaceHome } from "../features/workspace/WorkspaceHome";
 import type { ViewState } from "../lib/app";
 import type {
   DevicePlatform,
@@ -48,6 +48,8 @@ type AppStageProps = {
   gitRepositories: GitRepositoryView[];
   sessionsSelectedProjectId: string | null;
   sessionsSelectedBranchName: string | null;
+  sessionsPreviewOpen: boolean;
+  sessionsGitPanelOpen: boolean;
   sessionsTabs: TerminalTab[];
   projectServers: ServerRecord[];
   serverCountByProject: Record<string, number>;
@@ -80,9 +82,12 @@ type AppStageProps = {
   syncBusyAction: "export" | "import" | null;
   relayConnected: boolean;
   onCreateProject: () => void;
+  onEditProject: () => void;
   onOpenProject: (projectId: string) => void;
   onCopyPublicKey: (id: string) => void;
   copyingPublicKeyId: string | null;
+  onCreateCredential: () => void;
+  onCreateLocalSshKey: () => void;
   onDeleteKeychainItem: (id: string) => void;
   onRenameKeychainItem: (item: KeychainItemRecord) => void;
   onSearchChange: (value: string) => void;
@@ -177,6 +182,8 @@ export function AppStage({
   gitRepositories,
   sessionsSelectedProjectId,
   sessionsSelectedBranchName,
+  sessionsPreviewOpen,
+  sessionsGitPanelOpen,
   sessionsTabs,
   projectServers,
   serverCountByProject,
@@ -209,9 +216,12 @@ export function AppStage({
   syncBusyAction,
   relayConnected,
   onCreateProject,
+  onEditProject,
   onOpenProject,
   onCopyPublicKey,
   copyingPublicKeyId,
+  onCreateCredential,
+  onCreateLocalSshKey,
   onDeleteKeychainItem,
   onRenameKeychainItem,
   onSearchChange,
@@ -308,6 +318,8 @@ export function AppStage({
           onStatus={onStatus}
           projects={filteredProjects}
           selectedBranchName={sessionsSelectedBranchName}
+          previewOpen={sessionsPreviewOpen}
+          gitPanelOpen={sessionsGitPanelOpen}
           selectedProjectId={sessionsSelectedProjectId}
           servers={servers}
           tabs={sessionsTabs}
@@ -319,38 +331,37 @@ export function AppStage({
     );
   }
 
+  if (view === "workspace") {
+    return (
+      <div className={`${stageClassName} stage--sessions`}>
+        <ProjectsWorkspace
+          onCreateProject={onCreateProject}
+          onEditProject={onEditProject}
+          onSelectProject={onOpenProject}
+          projects={filteredProjects}
+          selectedProjectId={selectedProject?.id ?? null}
+          servers={servers}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className={stageClassName}>
       <TerminalWorkspace
         activeTabId={activeTabId}
         emptyTabsLabel={null}
         emptyState={
-          view === "workspace" && selectedProject ? (
-            <WorkspaceHome
-              activeSessions={workspaceTabs}
-              onConnect={onConnect}
-              onCreateServer={onCreateServer}
-              onEditServer={onEditServer}
-              onOpenRelaySetup={onOpenRelaySetupFromServer}
-              onOpenSession={onOpenTerminalSession}
-              onRefreshTmux={onRefreshTmux}
-              onSelectServer={onSelectServer}
-              project={selectedProject}
-              selectedServer={selectedServer}
-              selectedServerId={selectedServerId}
-              servers={projectServers}
-              tmuxLoading={tmuxLoading}
-              tmuxSessions={tmuxSessions}
-            />
-          ) : view === "keychain" ? (
+          view === "keychain" ? (
             <KeychainPage
+              gitHubSession={gitHubSession}
               copyingPublicKeyId={copyingPublicKeyId}
               onCopyPublicKey={onCopyPublicKey}
+              onCreateCredential={onCreateCredential}
+              onCreateLocalSshKey={onCreateLocalSshKey}
               items={filteredKeychainItems}
               onDelete={onDeleteKeychainItem}
               onRename={onRenameKeychainItem}
-              onSearchChange={onSearchChange}
-              search={search}
             />
           ) : view === "git" ? (
             <GitPage
@@ -461,7 +472,7 @@ export function AppStage({
         terminalTheme={activeTheme.terminal}
         terminalFontSize={settings.terminalFontSize}
         tabs={tabs}
-        visible={view === "workspace" && workspaceMode === "terminal"}
+        visible={false}
       />
     </div>
   );

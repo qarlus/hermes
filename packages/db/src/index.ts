@@ -9,6 +9,7 @@ import type {
   FileBrowserTarget,
   FilePreviewRecord,
   FileTransferOperation,
+  ProjectRemoteConnectionInput,
   CreateTerminalCommandInput,
   CreateLocalSshKeyInput,
   GitHubAuthSession,
@@ -197,6 +198,15 @@ export const connectLocalSession = (input?: ConnectLocalSessionInput) =>
 
 export const readFileDirectory = (target: FileBrowserTarget) =>
   invoke<FileBrowserDirectoryRecord>("read_file_directory", { target });
+
+export const readProjectRemoteDirectory = (
+  connection: ProjectRemoteConnectionInput,
+  path?: string | null
+) =>
+  invoke<FileBrowserDirectoryRecord>("read_project_remote_directory", {
+    connection,
+    path: path ?? null
+  });
 
 export const readFilePreview = (target: FileBrowserTarget) =>
   invoke<FilePreviewRecord>("read_file_preview", { target });

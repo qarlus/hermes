@@ -28,8 +28,8 @@ const authOptions: Array<{
     label: "System",
     description: "Use local ssh config, agent, or prompts. Hermes records the resolved device key when available."
   },
-  { value: "sshKey", label: "SSH Key", description: "Save a private key path in the keychain." },
-  { value: "password", label: "Password", description: "Save a password in the keychain." }
+  { value: "sshKey", label: "SSH Key", description: "Save a private key path in Credentials." },
+  { value: "password", label: "Password", description: "Save a password in Credentials." }
 ];
 
 export function ServerEditor({
@@ -50,14 +50,14 @@ export function ServerEditor({
   const secretPlaceholder =
     draft.authKind === "password"
       ? hasSelectedCredential
-        ? "Saved in keychain. Enter a new password to rotate it."
+        ? "Saved in credentials. Enter a new password to rotate it."
         : mode === "edit"
-          ? "Encrypted in keychain. Enter a new password to replace it."
+          ? "Encrypted in credentials. Enter a new password to replace it."
           : "Password"
       : hasSelectedCredential
-        ? "Saved in keychain. Enter a new key path to rotate it."
+        ? "Saved in credentials. Enter a new key path to rotate it."
         : mode === "edit"
-          ? "Encrypted in keychain. Enter a new key path to replace it."
+          ? "Encrypted in credentials. Enter a new key path to replace it."
         : "~/.ssh/id_ed25519";
 
   const handleCredentialPick = (credentialId: string) => {
@@ -111,20 +111,23 @@ export function ServerEditor({
 
             <div className="form-section__grid">
               <label className="field">
-                <span>Workspace</span>
-                <select
-                  value={draft.projectId}
-                  onChange={(event) => onChange("projectId", event.target.value)}
-                >
-                  <option value="" disabled>
-                    Select workspace
-                  </option>
-                  {projects.map((project) => (
-                    <option key={project.id} value={project.id}>
-                      {project.name}
+                <span>Project</span>
+                <div className="field-select">
+                  <select
+                    value={draft.projectId}
+                    onChange={(event) => onChange("projectId", event.target.value)}
+                  >
+                    <option value="" disabled>
+                      Select project
                     </option>
-                  ))}
-                </select>
+                    {projects.map((project) => (
+                      <option key={project.id} value={project.id}>
+                        {project.name}
+                      </option>
+                    ))}
+                  </select>
+                  <span aria-hidden="true" className="field-select__chevron" />
+                </div>
               </label>
 
               <label className="field">
@@ -167,6 +170,18 @@ export function ServerEditor({
               </label>
 
               <label className="field field--full">
+                <span>Remote path</span>
+                <input
+                  onChange={(event) => onChange("path", event.target.value)}
+                  placeholder="/srv/hermes"
+                  value={draft.path}
+                />
+                <small className="field-hint">
+                  Optional default directory after SSH connects to this server.
+                </small>
+              </label>
+
+              <label className="field field--full">
                 <span>Dashboard shortcut</span>
                 <button
                   className={`toggle ${draft.isFavorite ? "toggle--active" : ""}`}
@@ -182,7 +197,7 @@ export function ServerEditor({
           <section className="form-section field--full">
             <div className="form-section__header">
               <p className="eyebrow">Authentication</p>
-              <span>Saved credentials are encrypted and listed on the keychain page.</span>
+              <span>Saved credentials are encrypted and listed on the Credentials page.</span>
             </div>
 
             <div className="auth-options">
@@ -212,17 +227,20 @@ export function ServerEditor({
               <div className="form-section__grid">
                 <label className="field field--full">
                   <span>Saved credential</span>
-                  <select
-                    onChange={(event) => handleCredentialPick(event.target.value)}
-                    value={draft.credentialId ?? ""}
-                  >
-                    <option value="">Create new saved credential</option>
-                    {matchingKeychainItems.map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.name} ({item.usageCount})
-                      </option>
-                    ))}
-                  </select>
+                  <div className="field-select">
+                    <select
+                      onChange={(event) => handleCredentialPick(event.target.value)}
+                      value={draft.credentialId ?? ""}
+                    >
+                      <option value="">Create new saved credential</option>
+                      {matchingKeychainItems.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name} ({item.usageCount})
+                        </option>
+                      ))}
+                    </select>
+                    <span aria-hidden="true" className="field-select__chevron" />
+                  </div>
                   <small className="field-hint">
                     {hasSelectedCredential
                       ? "This server will reuse the selected saved credential."
@@ -259,7 +277,7 @@ export function ServerEditor({
           <section className="form-section field--full">
             <div className="form-section__header">
               <p className="eyebrow">Tmux</p>
-              <span>Disabled by default. Rejoin sessions explicitly from the workspace.</span>
+              <span>Disabled by default. Rejoin sessions explicitly from the project view.</span>
             </div>
 
             <div className="form-section__grid">

@@ -6,7 +6,9 @@ type AppShellProps = {
   topbar: ReactNode;
   layoutMode: ShellLayoutMode;
   rail: ReactNode;
+  railCollapsed?: boolean;
   secondaryRail?: ReactNode;
+  secondaryRailCollapsed?: boolean;
   secondaryRailLabel?: string;
 };
 
@@ -15,7 +17,9 @@ export function AppShell({
   topbar,
   layoutMode,
   rail,
+  railCollapsed = false,
   secondaryRail,
+  secondaryRailCollapsed = false,
   secondaryRailLabel = "Secondary navigation"
 }: AppShellProps) {
   const hasSecondaryRail = Boolean(secondaryRail);
@@ -24,6 +28,8 @@ export function AppShell({
     <div
       className={`desktop-shell desktop-shell--${layoutMode} ${
         hasSecondaryRail ? "desktop-shell--with-secondary" : ""
+      } ${railCollapsed ? "desktop-shell--rail-collapsed" : ""} ${
+        secondaryRailCollapsed ? "desktop-shell--secondary-collapsed" : ""
       }`}
     >
       <div className="desktop-shell__rail">{rail}</div>

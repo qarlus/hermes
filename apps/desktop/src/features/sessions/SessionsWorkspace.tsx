@@ -1,6 +1,7 @@
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import {
   FolderSimple,
+  GithubLogo,
   MonitorPlay,
   Stack,
   TerminalWindow
@@ -30,6 +31,8 @@ type SessionsWorkspaceProps = {
   projects: ProjectRecord[];
   selectedProjectId: string | null;
   selectedBranchName: string | null;
+  previewOpen: boolean;
+  gitPanelOpen: boolean;
   gitRepositories: GitRepositoryView[];
   servers: ServerRecord[];
   favoriteServers: ServerRecord[];
@@ -82,12 +85,13 @@ export function SessionsWorkspace({
   projects,
   selectedProjectId,
   selectedBranchName,
+  previewOpen,
+  gitPanelOpen,
   gitRepositories,
   servers,
   favoriteServers,
   localSessionPresets,
   terminalCommands,
-  activeTerminalLabel,
   terminalFontSize,
   terminalTheme,
   onSelectTab,
@@ -105,30 +109,24 @@ export function SessionsWorkspace({
   onStartLocalSession,
   onStatus
 }: SessionsWorkspaceProps) {
-  const [previewOpen, setPreviewOpen] = useState(false);
-
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
   const activeServer = activeTab ? servers.find((server) => server.id === activeTab.serverId) ?? null : null;
   const starterServers = (favoriteServers.length > 0 ? favoriteServers : servers).slice(0, 2);
   const recentPresets = localSessionPresets.slice(0, 2);
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
-  const activeBranchName = selectedBranchName ?? "main";
-  const showContextStrip = Boolean(selectedProject || tabs.length > 0);
+  const selectedRepository = selectedProject ? findProjectRepository(selectedProject, gitRepositories) : null;
+  const activeBranchName = selectedBranchName ?? selectedRepository?.snapshot?.branch ?? "main";
   const paneConfig = buildPaneConfig(tabs);
 
   return (
     <section className="sessions-workspace">
-      {showContextStrip ? (
-        <SessionContextStrip
-          contextLabel={selectedProject ? `${selectedProject.name} / ${activeBranchName}` : activeTerminalLabel ?? null}
-          terminalCount={tabs.length}
-          onStartLocalSession={onStartLocalSession}
-          onTogglePreview={() => setPreviewOpen((current) => !current)}
-          previewOpen={previewOpen}
-        />
-      ) : null}
-
-      <div className={`sessions-workspace__body ${previewOpen ? "sessions-workspace__body--with-preview" : ""}`}>
+      <div
+        className={`sessions-workspace__body ${
+          previewOpen ? "sessions-workspace__body--with-preview" : ""
+        } ${gitPanelOpen ? "sessions-workspace__body--with-git" : ""} ${
+          previewOpen && gitPanelOpen ? "sessions-workspace__body--with-git-preview" : ""
+        }`}
+      >
         <div className="sessions-canvas">
           <div className="sessions-canvas__pane-grid sessions-canvas__pane-grid--single">
             <SessionPane>
@@ -177,6 +175,14 @@ export function SessionsWorkspace({
           </div>
         </div>
 
+        {gitPanelOpen ? (
+          <GitPanel
+            activeBranchName={activeBranchName}
+            activeServer={activeServer}
+            selectedProject={selectedProject}
+            selectedRepository={selectedRepository}
+          />
+        ) : null}
         {previewOpen ? <PreviewPanel activeServer={activeServer} /> : null}
       </div>
     </section>
@@ -230,49 +236,6 @@ function buildPaneConfig(
     multiPaneColumns,
     multiPaneRows
   };
-}
-
-function SessionContextStrip({
-  contextLabel,
-  terminalCount,
-  onStartLocalSession,
-  onTogglePreview,
-  previewOpen
-}: {
-  contextLabel: string | null;
-  terminalCount: number;
-  previewOpen: boolean;
-  onStartLocalSession: () => void;
-  onTogglePreview: () => void;
-}) {
-  return (
-    <div className="session-context-strip">
-      <div className="session-context-strip__copy">
-        <strong>{contextLabel ?? "Session canvas"}</strong>
-        <span>{terminalCount} active terminal{terminalCount === 1 ? "" : "s"}</span>
-      </div>
-
-      <div className="session-context-strip__actions">
-        <button
-          aria-label="Open local terminal"
-          className="session-strip-icon session-strip-icon--active"
-          onClick={onStartLocalSession}
-          type="button"
-        >
-          <TerminalWindow size={14} />
-        </button>
-        <button
-          aria-label="Toggle preview"
-          aria-pressed={previewOpen}
-          className={`session-strip-icon ${previewOpen ? "session-strip-icon--active" : ""}`}
-          onClick={onTogglePreview}
-          type="button"
-        >
-          <MonitorPlay size={14} />
-        </button>
-      </div>
-    </div>
-  );
 }
 
 function SessionPane({ children }: { children: ReactNode }) {
@@ -351,7 +314,7 @@ function SessionProjectPicker({
       <div className="session-project-picker__card">
         <div className="session-project-picker__lead">
           <strong>Choose a project surface</strong>
-          <span>Start from a workspace or local folder, then branch sessions hang off that context.</span>
+          <span>Start from a project or local folder, then branch sessions hang off that context.</span>
         </div>
 
         <div className="session-project-picker__grid">
@@ -367,7 +330,7 @@ function SessionProjectPicker({
               </span>
               <span className="session-project-picker__item-copy">
                 <strong>{project.name}</strong>
-                <span>{project.description || "Workspace context"}</span>
+                <span>{project.description || "Project context"}</span>
               </span>
             </button>
           ))}
@@ -407,7 +370,22 @@ function SessionProjectPicker({
 
 function findProjectRepository(project: ProjectRecord, repositories: GitRepositoryView[]) {
   const projectName = normalizeKey(project.name);
+  const projectPath = project.path.trim();
+  const projectRepo = project.githubRepoFullName.trim().toLowerCase();
   return (
+    repositories.find((repository) => repository.path === projectPath) ??
+    repositories.find((repository) => {
+      const snapshot = repository.snapshot;
+      if (!snapshot || !projectRepo) {
+        return false;
+      }
+
+      return snapshot.remotes.some((remote) =>
+        [remote.fetchUrl, remote.pushUrl].some(
+          (value) => normalizeGitHubRepositorySlug(value) === projectRepo
+        )
+      );
+    }) ??
     repositories.find((repository) => normalizeKey(repository.name) === projectName) ??
     repositories.find((repository) => normalizeKey(repository.path).includes(projectName)) ??
     null
@@ -418,6 +396,17 @@ function normalizeKey(value: string) {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-");
 }
 
+function normalizeGitHubRepositorySlug(value: string) {
+  const normalized = value.trim().replace(/\.git$/i, "");
+  const sshMatch = normalized.match(/github\.com[:/]([^/]+\/[^/]+)$/i);
+  if (sshMatch) {
+    return sshMatch[1].toLowerCase();
+  }
+
+  const httpMatch = normalized.match(/github\.com\/([^/]+\/[^/]+)$/i);
+  return httpMatch ? httpMatch[1].toLowerCase() : "";
+}
+
 function PreviewPanel({ activeServer }: { activeServer: ServerRecord | null }) {
   return (
     <aside className="preview-panel">
@@ -426,6 +415,36 @@ function PreviewPanel({ activeServer }: { activeServer: ServerRecord | null }) {
         <span>{activeServer ? buildSshTarget(activeServer) : ""}</span>
       </div>
       <div className="preview-panel__surface" />
+    </aside>
+  );
+}
+
+function GitPanel({
+  activeBranchName,
+  activeServer,
+  selectedProject,
+  selectedRepository
+}: {
+  activeBranchName: string;
+  activeServer: ServerRecord | null;
+  selectedProject: ProjectRecord | null;
+  selectedRepository: GitRepositoryView | null;
+}) {
+  return (
+    <aside className="preview-panel preview-panel--git">
+      <div className="preview-panel__header">
+        <strong>Git</strong>
+        <span>{selectedProject ? `${selectedProject.name} / ${activeBranchName}` : activeBranchName}</span>
+      </div>
+      <div className="preview-panel__surface preview-panel__surface--git">
+        <div className="preview-panel__empty">
+          <span className="preview-panel__empty-icon">
+            <GithubLogo size={18} weight="regular" />
+          </span>
+          <strong>{activeBranchName}</strong>
+          <span>{selectedRepository?.path ?? (activeServer ? buildSshTarget(activeServer) : "Branch review surface")}</span>
+        </div>
+      </div>
     </aside>
   );
 }

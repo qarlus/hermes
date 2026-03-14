@@ -16,6 +16,7 @@ import {
   GithubLogo,
   Key,
   MagnifyingGlass,
+  MonitorPlay,
   Plus,
   TerminalWindow
 } from "@phosphor-icons/react";
@@ -178,6 +179,7 @@ const GITHUB_OWNED_REPOSITORIES_CACHE_KEY = "hermes.githubOwnedRepositories";
 const GITHUB_OWNED_REPOSITORIES_CACHE_TTL_MS = 5 * 60 * 1000;
 const TOAST_DURATION_MS = 2800;
 const MAX_SYNCED_HISTORY_RECORDS = 250;
+const PROJECT_RUNTIME_SERVER_NOTE = "Managed from project settings.";
 const EMPTY_GIT_TOOLBAR_CONTEXT: GitToolbarContext = {
   cloneUrl: null,
   shellRepositoryId: null,
@@ -268,6 +270,10 @@ export function App() {
   >({});
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
   const [view, setView] = useState<ViewState>("dashboard");
+  const [appRailCollapsed, setAppRailCollapsed] = useState(false);
+  const [sessionsRailCollapsed, setSessionsRailCollapsed] = useState(false);
+  const [sessionsPreviewOpen, setSessionsPreviewOpen] = useState(false);
+  const [sessionsGitPanelOpen, setSessionsGitPanelOpen] = useState(false);
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
   const [inspector, setInspector] = useState<InspectorState>({ kind: "hidden" });
@@ -494,9 +500,10 @@ export function App() {
     projects.forEach((project) => {
       const repository = findProjectRepository(project, gitRepositories);
       defaults[project.id] =
-        repository?.snapshot?.branch ??
-        repository?.snapshot?.branches.find((branch) => branch.current)?.name ??
-        "main";
+        project.githubDefaultBranch.trim() ||
+        (repository?.snapshot?.branch ??
+          repository?.snapshot?.branches.find((branch) => branch.current)?.name ??
+          "main");
     });
 
     return defaults;
@@ -680,12 +687,6 @@ export function App() {
 
     setSelectedServerId(availableServers[0]?.id ?? null);
   }, [selectedProjectId, selectedServerId, servers]);
-
-  useEffect(() => {
-    if (view === "workspace" && !selectedProjectId) {
-      setView("dashboard");
-    }
-  }, [selectedProjectId, view]);
 
   useEffect(() => {
     persistLocalSessionPresets(localSessionPresets);
@@ -1126,9 +1127,23 @@ export function App() {
       return;
     }
 
+    const runtimeServer = findProjectRuntimeServer(selectedProject, servers);
+
     setProjectDraft({
       name: selectedProject.name,
-      description: selectedProject.description
+      description: selectedProject.description,
+      path: selectedProject.path,
+      targetKind: selectedProject.targetKind,
+      linkedServerId: selectedProject.linkedServerId ?? "",
+      githubRepoFullName: selectedProject.githubRepoFullName,
+      githubDefaultBranch: selectedProject.githubDefaultBranch,
+      serverHostname: runtimeServer?.hostname ?? "",
+      serverPort: runtimeServer?.port ?? 22,
+      serverUsername: runtimeServer?.username ?? "",
+      serverAuthKind: runtimeServer?.authKind ?? "default",
+      serverCredentialId: runtimeServer?.credentialId ?? "",
+      serverCredentialName: runtimeServer?.credentialName ?? "",
+      serverCredentialSecret: ""
     });
     setInspector({ kind: "project", mode: "edit" });
   };
@@ -1167,21 +1182,120 @@ export function App() {
         return;
       }
 
+      const normalizedDraft = normalizeProjectInput(projectDraft);
+      const previousProject =
+        inspector.mode === "edit" && selectedProjectId
+          ? projects.find((project) => project.id === selectedProjectId) ?? null
+          : null;
+      const existingRuntimeServer = previousProject
+        ? findProjectRuntimeServer(previousProject, servers)
+        : null;
+      const syncProjectRuntimeServer = async (
+        project: ProjectRecord
+      ): Promise<ProjectRecord> => {
+        if (normalizedDraft.targetKind !== "server") {
+          return project;
+        }
+
+        const runtimeServerInput = normalizeServerInput({
+          projectId: project.id,
+          name: project.name,
+          hostname: normalizedDraft.serverHostname,
+          port: normalizedDraft.serverPort,
+          username: normalizedDraft.serverUsername,
+          path: normalizedDraft.path,
+          authKind: normalizedDraft.serverAuthKind,
+          credentialId: normalizedDraft.serverCredentialId || null,
+          credentialName:
+            normalizedDraft.serverCredentialName ||
+            `${normalizedDraft.serverHostname || project.name} key`,
+          credentialSecret: normalizedDraft.serverCredentialSecret,
+          isFavorite: existingRuntimeServer?.isFavorite ?? false,
+          tmuxSession: existingRuntimeServer?.tmuxSession ?? "main",
+          useTmux: existingRuntimeServer?.useTmux ?? false,
+          notes: existingRuntimeServer?.notes || PROJECT_RUNTIME_SERVER_NOTE
+        });
+
+        const runtimeServer =
+          existingRuntimeServer && (project.linkedServerId === existingRuntimeServer.id || existingRuntimeServer.notes === PROJECT_RUNTIME_SERVER_NOTE)
+            ? await updateServer(existingRuntimeServer.id, runtimeServerInput)
+            : await createServer(runtimeServerInput);
+
+        setServers((current) => {
+          const existingIndex = current.findIndex((server) => server.id === runtimeServer.id);
+          if (existingIndex >= 0) {
+            return current.map((server) => (server.id === runtimeServer.id ? runtimeServer : server));
+          }
+
+          return [runtimeServer, ...current];
+        });
+        setSelectedServerId(runtimeServer.id);
+
+        if ((project.linkedServerId ?? "") === runtimeServer.id) {
+          return project;
+        }
+
+        const syncedProject = await updateProject(project.id, {
+          ...normalizedDraft,
+          linkedServerId: runtimeServer.id
+        });
+        setProjects((current) =>
+          current.map((candidate) => (candidate.id === syncedProject.id ? syncedProject : candidate))
+        );
+        return syncedProject;
+      };
+
+      const clearProjectRuntimeServer = async (
+        project: ProjectRecord
+      ): Promise<ProjectRecord> => {
+        if (
+          existingRuntimeServer &&
+          (project.linkedServerId === existingRuntimeServer.id ||
+            existingRuntimeServer.notes === PROJECT_RUNTIME_SERVER_NOTE)
+        ) {
+          await deleteServer(existingRuntimeServer.id);
+          setServers((current) => current.filter((server) => server.id !== existingRuntimeServer.id));
+        }
+        setSelectedServerId(null);
+
+        if (!project.linkedServerId) {
+          return project;
+        }
+
+        const clearedProject = await updateProject(project.id, {
+          ...normalizedDraft,
+          linkedServerId: ""
+        });
+        setProjects((current) =>
+          current.map((candidate) => (candidate.id === clearedProject.id ? clearedProject : candidate))
+        );
+        return clearedProject;
+      };
+
       if (inspector.mode === "create") {
-        const created = await createProject(normalizeProjectInput(projectDraft));
+        let created = await createProject(normalizedDraft);
         setProjects((current) => [created, ...current]);
+        created =
+          normalizedDraft.targetKind === "server"
+            ? await syncProjectRuntimeServer(created)
+            : created;
         setSelectedProjectId(created.id);
         setWorkspaceMode("home");
         setView("workspace");
-        pushToast(`Created workspace ${projectDisplayLabel(created)}.`, "success");
+        pushToast(`Created project ${projectDisplayLabel(created)}.`, "success");
       } else if (selectedProjectId) {
-        const updated = await updateProject(selectedProjectId, normalizeProjectInput(projectDraft));
+        let updated = await updateProject(selectedProjectId, normalizedDraft);
         setProjects((current) =>
           current.map((project) => (project.id === updated.id ? updated : project))
         );
+        updated =
+          normalizedDraft.targetKind === "server"
+            ? await syncProjectRuntimeServer(updated)
+            : await clearProjectRuntimeServer(updated);
         pushToast(`Updated ${projectDisplayLabel(updated)}.`, "success");
       }
 
+      await refreshKeychain();
       setInspector({ kind: "hidden" });
     } catch (error) {
       pushToast(getErrorMessage(error), "error");
@@ -1236,7 +1350,7 @@ export function App() {
       await refreshKeychain();
       setInspector({ kind: "hidden" });
       setView("dashboard");
-      pushToast("Deleted workspace and its servers.", "success");
+      pushToast("Deleted project and its servers.", "success");
     } catch (error) {
       pushToast(getErrorMessage(error), "error");
     }
@@ -1299,11 +1413,13 @@ export function App() {
   const handleConnect = async (
     serverId: string,
     tmuxSession?: string,
+    cwd?: string,
     surface: "sessions" | "relay" = "sessions",
     activateView = true
   ) => {
     try {
       const server = servers.find((candidate) => candidate.id === serverId);
+      const resolvedCwd = (cwd ?? server?.path.trim() ?? "") || undefined;
       if (server) {
         setSelectedProjectId(server.projectId);
         setSelectedServerId(server.id);
@@ -1314,7 +1430,7 @@ export function App() {
         setSessionLauncherOpen(false);
       }
 
-      const tab = await connectSession({ serverId, tmuxSession });
+      const tab = await connectSession({ serverId, tmuxSession, cwd: resolvedCwd });
       const pendingState = pendingTerminalStatesRef.current.get(tab.id);
       if (pendingState) {
         pendingTerminalStatesRef.current.delete(tab.id);
@@ -1335,7 +1451,7 @@ export function App() {
           serverRef: buildSyncServerRef(server),
           serverLabel: serverDisplayLabel(server),
           tmuxSession: resolvedTmuxSession,
-          cwd: tab.cwd,
+          cwd: resolvedCwd ?? tab.cwd,
           title: tab.title,
           startedAt: tab.startedAt
         });
@@ -1410,7 +1526,7 @@ export function App() {
       return;
     }
 
-    const tab = await handleConnect(relayHostServer.id, undefined, "sessions", true);
+    const tab = await handleConnect(relayHostServer.id, undefined, undefined, "sessions", true);
     if (!tab) {
       return;
     }
@@ -1596,31 +1712,40 @@ export function App() {
       return existingBinding;
     }
 
+    const project = projects.find((candidate) => candidate.id === projectId) ?? null;
+    const linkedServer =
+      project?.linkedServerId
+        ? servers.find((server) => server.id === project.linkedServerId) ?? null
+        : null;
     const projectServer =
-      servers.find((server) => server.projectId === projectId && server.isFavorite) ??
-      servers.find((server) => server.projectId === projectId) ??
-      null;
+      project?.targetKind === "server"
+        ? linkedServer ??
+          servers.find((server) => server.projectId === projectId && server.isFavorite) ??
+          servers.find((server) => server.projectId === projectId) ??
+          null
+        : null;
 
     if (projectServer) {
+      const cwd = projectServer.path.trim() || project?.path.trim() || null;
       return {
         projectId,
         branchName,
         targetKind: "server" as const,
         serverId: projectServer.id,
-        cwd: null,
+        cwd,
         label: serverDisplayLabel(projectServer)
       };
     }
 
-    const project = projects.find((candidate) => candidate.id === projectId) ?? null;
     const repository = project ? findProjectRepository(project, gitRepositories) : null;
+    const projectPath = project?.path.trim() || null;
 
     return {
       projectId,
       branchName,
       targetKind: "local" as const,
       serverId: null,
-      cwd: repository?.path ?? null,
+      cwd: projectPath ?? repository?.path ?? null,
       label: project ? `${project.name} / ${branchName}` : branchName
     };
   };
@@ -1632,12 +1757,12 @@ export function App() {
     }
 
     if (target.targetKind === "server" && target.serverId) {
-      const tab = await handleConnect(target.serverId, undefined, "sessions", true);
+      const tab = await handleConnect(target.serverId, undefined, target.cwd ?? undefined, "sessions", true);
       if (tab) {
         bindTabToSessionsBranch(tab.id, projectId, branchName, {
           targetKind: "server",
           serverId: target.serverId,
-          cwd: null,
+          cwd: target.cwd,
           label: target.label
         });
       }
@@ -1842,7 +1967,7 @@ export function App() {
     }
   ) => {
     if (!isTauriRuntime()) {
-      throw new Error("Workspace import is only available in the desktop runtime.");
+      throw new Error("Project import is only available in the desktop runtime.");
     }
 
     const credentialIdByKey = new Map<string, string>();
@@ -1868,27 +1993,43 @@ export function App() {
     }
 
     const projectIdMap = new Map<string, string>();
+    const createdProjectBySourceId = new Map<string, ProjectRecord>();
 
     for (const project of bundle.projects) {
-      const createdProject = await createProject({
-        name: project.name,
-        description: project.description
-      });
+        const createdProject = await createProject({
+          name: project.name,
+          description: project.description,
+          path: project.path,
+          targetKind: project.targetKind,
+          linkedServerId: project.linkedServerId ?? "",
+          githubRepoFullName: project.githubRepoFullName,
+          githubDefaultBranch: project.githubDefaultBranch,
+          serverHostname: "",
+          serverPort: 22,
+          serverUsername: "",
+          serverAuthKind: "default",
+          serverCredentialId: "",
+          serverCredentialName: "",
+          serverCredentialSecret: ""
+        });
       projectIdMap.set(project.id, createdProject.id);
+      createdProjectBySourceId.set(project.id, createdProject);
     }
 
+    const serverIdMap = new Map<string, string>();
     for (const server of bundle.servers) {
       const mappedProjectId = projectIdMap.get(server.projectId);
       if (!mappedProjectId) {
         continue;
       }
 
-      await createServer({
+      const createdServer = await createServer({
         projectId: mappedProjectId,
         name: server.name,
         hostname: server.hostname,
         port: server.port,
         username: server.username,
+        path: server.path,
         authKind: server.authKind,
         credentialId:
           server.credentialName && server.authKind !== "default"
@@ -1901,6 +2042,40 @@ export function App() {
         useTmux: server.useTmux,
         notes: server.notes
       });
+      if (server.id) {
+        serverIdMap.set(server.id, createdServer.id);
+      }
+    }
+
+    for (const project of bundle.projects) {
+      const createdProject = createdProjectBySourceId.get(project.id);
+      if (!createdProject) {
+        continue;
+      }
+
+      const mappedLinkedServerId =
+        project.linkedServerId === null ? "" : (serverIdMap.get(project.linkedServerId) ?? "");
+      if ((createdProject.linkedServerId ?? "") === mappedLinkedServerId) {
+        continue;
+      }
+
+      const updatedProject = await updateProject(createdProject.id, {
+        name: createdProject.name,
+        description: createdProject.description,
+        path: createdProject.path,
+        targetKind: createdProject.targetKind,
+        linkedServerId: mappedLinkedServerId,
+        githubRepoFullName: createdProject.githubRepoFullName,
+        githubDefaultBranch: createdProject.githubDefaultBranch,
+        serverHostname: "",
+        serverPort: 22,
+        serverUsername: "",
+        serverAuthKind: "default",
+        serverCredentialId: "",
+        serverCredentialName: "",
+        serverCredentialSecret: ""
+      });
+      createdProjectBySourceId.set(project.id, updatedProject);
     }
 
     if (bundle.terminalCommands !== null) {
@@ -2086,6 +2261,12 @@ export function App() {
     const projectNamesById = new Map(
       bundle.projects.map((project) => [project.id, project.name.trim()] as const)
     );
+    const serverKeysById = new Map(
+      bundle.servers.map((server) => [
+        server.id,
+        `${projectNamesById.get(server.projectId) ?? server.projectId}\u0000${server.name.trim()}\u0000${server.hostname.trim()}\u0000${server.port}\u0000${server.username.trim()}\u0000${server.path.trim()}`
+      ] as const)
+    );
 
     return {
       settings:
@@ -2099,11 +2280,19 @@ export function App() {
       projects: bundle.projects
         .map((project) => ({
           name: project.name.trim(),
-          description: project.description.trim()
+          description: project.description.trim(),
+          path: project.path.trim(),
+          targetKind: project.targetKind,
+          linkedServerId:
+            project.linkedServerId === null
+              ? ""
+              : (serverKeysById.get(project.linkedServerId) ?? ""),
+          githubRepoFullName: project.githubRepoFullName.trim(),
+          githubDefaultBranch: project.githubDefaultBranch.trim()
         }))
         .sort((left, right) =>
-          `${left.name}\u0000${left.description}`.localeCompare(
-            `${right.name}\u0000${right.description}`
+          `${left.name}\u0000${left.description}\u0000${left.path}\u0000${left.targetKind}\u0000${left.linkedServerId}\u0000${left.githubRepoFullName}\u0000${left.githubDefaultBranch}`.localeCompare(
+            `${right.name}\u0000${right.description}\u0000${right.path}\u0000${right.targetKind}\u0000${right.linkedServerId}\u0000${right.githubRepoFullName}\u0000${right.githubDefaultBranch}`
           )
         ),
       servers: bundle.servers
@@ -2113,6 +2302,7 @@ export function App() {
           hostname: server.hostname.trim(),
           port: server.port,
           username: server.username.trim(),
+          path: server.path.trim(),
           authKind: server.authKind,
           credentialName: server.credentialName ?? "",
           isFavorite: server.isFavorite,
@@ -3522,13 +3712,19 @@ export function App() {
   };
 
   const handleConnectServerForSessionsBranch = async (serverId: string, tmuxSession?: string) => {
-    const tab = await handleConnect(serverId, tmuxSession, "sessions", true);
+    const server = servers.find((candidate) => candidate.id === serverId) ?? null;
+    const cwd =
+      server?.path.trim() ||
+      (sessionsProjectId
+        ? projects.find((candidate) => candidate.id === sessionsProjectId)?.path.trim()
+        : "") ||
+      undefined;
+    const tab = await handleConnect(serverId, tmuxSession, cwd, "sessions", true);
     if (tab && sessionsProjectId && sessionsSelectedBranchName) {
-      const server = servers.find((candidate) => candidate.id === serverId) ?? null;
       bindTabToSessionsBranch(tab.id, sessionsProjectId, sessionsSelectedBranchName, {
         targetKind: "server",
         serverId,
-        cwd: null,
+        cwd: cwd ?? null,
         label: server ? serverDisplayLabel(server) : tab.title
       });
     }
@@ -4383,11 +4579,15 @@ export function App() {
 
   const headerTitle =
     view === "workspace"
-      ? "Connections"
+      ? "Projects"
       : view === "git" && gitToolbarContext.headerTitle
         ? gitToolbarContext.headerTitle
       : view === "sessions"
-        ? "Sessions"
+        ? sessionsProjectId
+          ? sessionsSelectedBranchName
+            ? `Sessions / ${projects.find((project) => project.id === sessionsProjectId)?.name ?? "Project"} / ${sessionsSelectedBranchName}`
+            : `Sessions / ${projects.find((project) => project.id === sessionsProjectId)?.name ?? "Project"}`
+          : "Sessions"
       : view === "git"
         ? "Git"
       : view === "files"
@@ -4395,20 +4595,22 @@ export function App() {
       : view === "settings"
         ? "Settings"
       : view === "keychain"
-        ? "Keychain"
+        ? "Credentials"
         : "Home";
 
   const headerSubtitle =
     view === "sessions" && activeSessionsWorkspaceTabServer
       ? `${sessionsWorkspaceTabs.length} live terminal${sessionsWorkspaceTabs.length === 1 ? "" : "s"} / ${buildSshTarget(activeSessionsWorkspaceTabServer)} / port ${activeSessionsWorkspaceTabServer.port}`
+      : view === "sessions" && sessionsProjectId
+        ? `${sessionsWorkspaceTabs.length} live terminal${sessionsWorkspaceTabs.length === 1 ? "" : "s"}`
       : view === "sessions"
         ? `${sessionsWorkspaceTabs.length} active terminal${sessionsWorkspaceTabs.length === 1 ? "" : "s"}`
       : view === "workspace" && workspaceMode === "terminal" && selectedServer
       ? `${selectedProject ? `${projectDisplayLabel(selectedProject)} / ` : ""}${buildSshTarget(selectedServer)} / port ${selectedServer.port}${selectedServer.useTmux ? ` / tmux ${selectedServer.tmuxSession}` : ""}`
       : view === "workspace"
         ? selectedProject
-          ? `${projectDisplayLabel(selectedProject)} / Servers, live sessions, and tmux reconnects`
-          : "Servers, live sessions, and tmux reconnects"
+          ? `${selectedProject.githubRepoFullName || "No GitHub repo linked"} / ${selectedProject.path || "No path set"} / ${selectedProject.targetKind === "server" ? "Server runtime" : "Local runtime"}`
+          : `${filteredProjects.length} project${filteredProjects.length === 1 ? "" : "s"} / Create or select one to edit settings`
         : view === "git" && gitToolbarContext.headerTitle
           ? gitToolbarContext.headerSubtitle ?? ""
         : view === "git"
@@ -4422,10 +4624,10 @@ export function App() {
         : view === "settings"
           ? `${relayHostServer ? `${serverDisplayLabel(relayHostServer)} relay host / ` : ""}${relayState.currentDeviceRole ? `${relayState.currentDeviceRole} device / ` : ""}${localLauncherSummary} launcher / ${settings.terminalFontSize}px terminal text`
         : view === "keychain"
-          ? `${filteredKeychainItems.length} saved credential${filteredKeychainItems.length === 1 ? "" : "s"}`
+          ? `${filteredKeychainItems.length} saved credential${filteredKeychainItems.length === 1 ? "" : "s"}${gitHubSession ? ` / GitHub token connected as @${gitHubSession.login}` : ""}`
           : loading
-            ? "Loading local workspaces..."
-            : `${filteredProjects.length} workspace${filteredProjects.length === 1 ? "" : "s"} ready locally.`;
+            ? "Loading local projects..."
+            : `${filteredProjects.length} project${filteredProjects.length === 1 ? "" : "s"} ready locally.`;
 
   const { clearTerminalInput, queueTerminalInput } = useBufferedTerminalInput({
     onError: (error) => pushToast(getErrorMessage(error), "error"),
@@ -4457,6 +4659,27 @@ export function App() {
           ? "wide"
           : "standard";
 
+  const shellChromeActions = (
+    <div className="shell-restore-group">
+      <button
+        className={`shell-restore-button ${appRailCollapsed ? "shell-restore-button--active" : ""}`}
+        onClick={() => setAppRailCollapsed((current) => !current)}
+        type="button"
+      >
+        Sidebar
+      </button>
+      {view === "sessions" && sessionsProjectId ? (
+        <button
+          className={`shell-restore-button ${sessionsRailCollapsed ? "shell-restore-button--active" : ""}`}
+          onClick={() => setSessionsRailCollapsed((current) => !current)}
+          type="button"
+        >
+          Rail
+        </button>
+      ) : null}
+    </div>
+  );
+
   const headerActions =
     view === "dashboard" ? (
       <div className="shell-action-group shell-action-group--home">
@@ -4470,29 +4693,64 @@ export function App() {
           />
         </label>
         <button
-          aria-label="New workspace"
+          aria-label="New project"
           className="shell-icon-button"
           onClick={openCreateProject}
-          title="New workspace"
+          title="New project"
           type="button"
         >
           <Plus size={15} weight="bold" />
         </button>
+        {shellChromeActions}
       </div>
-    ) : view === "sessions" ? null : view === "workspace" ? (
+    ) : view === "sessions" ? (
       <div className="shell-action-group">
-        <ShellAction icon={DesktopTower} label="New server" onClick={openCreateServer} tone="primary" />
-        <ShellAction icon={TerminalWindow} label="Sessions" onClick={() => setView("sessions")} />
+        <button
+          aria-label="New terminal"
+          className="shell-icon-button"
+          disabled={!sessionsProjectId}
+          onClick={() => void handleCreateSessionsBranchTerminal()}
+          title="New terminal"
+          type="button"
+        >
+          <TerminalWindow size={15} weight="regular" />
+        </button>
+        <button
+          aria-label="Toggle preview"
+          className={`shell-icon-button ${sessionsPreviewOpen ? "shell-icon-button--active" : ""}`}
+          disabled={!sessionsProjectId}
+          onClick={() => setSessionsPreviewOpen((current) => !current)}
+          title="Toggle preview"
+          type="button"
+        >
+          <MonitorPlay size={15} weight="regular" />
+        </button>
+        <button
+          aria-label="Toggle git"
+          className={`shell-icon-button ${sessionsGitPanelOpen ? "shell-icon-button--active" : ""}`}
+          disabled={!sessionsProjectId}
+          onClick={() => setSessionsGitPanelOpen((current) => !current)}
+          title="Toggle git"
+          type="button"
+        >
+          <GithubLogo size={15} weight="regular" />
+        </button>
+        {shellChromeActions}
+      </div>
+    ) : view === "workspace" ? (
+      <div className="shell-action-group">
+        {shellChromeActions}
         <ShellAction
           disabled={!selectedProject}
           icon={GearSix}
-          label="Edit workspace"
+          label="Edit project"
           onClick={openEditProject}
         />
-        <ShellAction icon={FolderPlus} label="New workspace" onClick={openCreateProject} />
+        <ShellAction icon={FolderPlus} label="New project" onClick={openCreateProject} tone="primary" />
       </div>
     ) : view === "keychain" ? (
       <div className="shell-action-group">
+        {shellChromeActions}
         <label className="shell-search">
           <MagnifyingGlass size={14} weight="bold" />
           <input
@@ -4506,6 +4764,7 @@ export function App() {
       </div>
     ) : view === "git" ? (
       <div className="shell-action-group">
+        {shellChromeActions}
         {!isGitDetailView ? (
           <>
             <ShellAction
@@ -4568,7 +4827,7 @@ export function App() {
           />
         )}
       </div>
-    ) : null;
+    ) : shellChromeActions;
 
   function handleShellContextMenu(event: ReactMouseEvent<HTMLElement>) {
     const target = event.target as HTMLElement | null;
@@ -4619,11 +4878,19 @@ export function App() {
           />
         }
         layoutMode={shellLayoutMode}
-        rail={<AppRail onNavigate={handleNavigate} view={view} />}
+        rail={
+          <AppRail
+            collapsed={appRailCollapsed}
+            onNavigate={handleNavigate}
+            view={view}
+          />
+        }
+        railCollapsed={appRailCollapsed}
         secondaryRail={
           view === "sessions" && sessionsProjectId ? (
             <SessionNavigator
               activeTabId={activeSessionsWorkspaceTab?.id ?? null}
+              collapsed={sessionsRailCollapsed}
               selectedBranchName={sessionsSelectedBranchName}
               gitRepositories={gitRepositories}
               localSessionPresets={localSessionPresets}
@@ -4648,6 +4915,7 @@ export function App() {
             />
           ) : undefined
         }
+        secondaryRailCollapsed={sessionsRailCollapsed}
         secondaryRailLabel="Session navigator"
       >
         <AppStage
@@ -4657,6 +4925,8 @@ export function App() {
           favoriteServers={favoriteServers}
           gitRepositories={gitRepositories}
           sessionsSelectedBranchName={sessionsSelectedBranchName}
+          sessionsPreviewOpen={sessionsPreviewOpen}
+          sessionsGitPanelOpen={sessionsGitPanelOpen}
           sessionsSelectedProjectId={sessionsProjectId}
           sessionsTabs={sessionsWorkspaceTabs}
           filteredKeychainItems={filteredKeychainItems}
@@ -4691,6 +4961,7 @@ export function App() {
           onCopyGitHubCloneUrl={(cloneUrl) => void handleCopyGitHubCloneUrl(cloneUrl)}
           onCopyGitReviewDraft={(repositoryId) => void handleCopyGitReviewDraft(repositoryId)}
           onCreateProject={openCreateProject}
+          onEditProject={openEditProject}
           onCreateGitBranch={(repositoryId) => void handleCreateGitBranch(repositoryId)}
           onCreateServer={openCreateServer}
           onCustomTerminalArgsChange={(value) =>
@@ -4713,6 +4984,8 @@ export function App() {
           }
           onCopyPublicKey={(id) => void handleCopyKeychainPublicKey(id)}
           copyingPublicKeyId={copyingPublicKeyId}
+          onCreateCredential={openCreateKeychainItem}
+          onCreateLocalSshKey={() => void openCreateLocalSshKey()}
           onDeleteKeychainItem={(id) => void handleDeleteKeychainItem(id)}
           onEditServer={openEditServerById}
           onOpenRelaySetupFromServer={(serverId) => openRelaySetup(serverId)}
@@ -4886,10 +5159,31 @@ export function App() {
         onBrowseLocalSshKeyDirectory={() => void handleBrowseLocalSshKeyDirectory()}
         onBrowseKeychainSecret={() => void handleBrowseKeychainSecret()}
         onProjectChange={(field, value) =>
-          setProjectDraft((current) => ({
-            ...current,
-            [field]: value
-          }))
+          setProjectDraft((current) => {
+            if (field === "targetKind") {
+              return {
+                ...current,
+                targetKind: value as ProjectInput["targetKind"],
+                linkedServerId: value === "local" ? "" : current.linkedServerId
+              };
+            }
+
+            if (field === "serverAuthKind") {
+              const nextAuthKind = value as ProjectInput["serverAuthKind"];
+              return {
+                ...current,
+                serverAuthKind: nextAuthKind,
+                serverCredentialId: nextAuthKind === "default" ? "" : current.serverCredentialId,
+                serverCredentialName: nextAuthKind === "default" ? "" : current.serverCredentialName,
+                serverCredentialSecret: nextAuthKind === "default" ? "" : current.serverCredentialSecret
+              };
+            }
+
+            return {
+              ...current,
+              [field]: value
+            };
+          })
         }
         onSaveKeychainItem={() => void handleSaveKeychainItem()}
         onSaveProject={() => void saveProject()}
@@ -4897,6 +5191,8 @@ export function App() {
         onServerChange={handleServerDraftChange}
         projectDraft={projectDraft}
         projects={projects}
+        servers={servers}
+        gitHubRepositories={gitHubOwnedRepositories}
         saving={saving}
         serverDraft={serverDraft}
       />
@@ -5296,15 +5592,51 @@ function normalizeTerminalCommandInput(command: string) {
 
 function findProjectRepository(project: ProjectRecord, repositories: GitRepositoryView[]) {
   const projectName = normalizeProjectRepositoryKey(project.name);
+  const projectPath = project.path.trim();
+  const projectRepo = project.githubRepoFullName.trim().toLowerCase();
   return (
+    repositories.find((repository) => repository.path === projectPath) ??
+    repositories.find((repository) => {
+      const snapshot = repository.snapshot;
+      if (!snapshot || !projectRepo) {
+        return false;
+      }
+
+      return snapshot.remotes.some((remote) =>
+        [remote.fetchUrl, remote.pushUrl].some(
+          (value) => normalizeGitHubRepositorySlug(value) === projectRepo
+        )
+      );
+    }) ??
     repositories.find((repository) => normalizeProjectRepositoryKey(repository.name) === projectName) ??
     repositories.find((repository) => normalizeProjectRepositoryKey(repository.path).includes(projectName)) ??
     null
   );
 }
 
+function findProjectRuntimeServer(project: ProjectRecord, servers: ServerRecord[]) {
+  return (
+    (project.linkedServerId
+      ? servers.find((server) => server.id === project.linkedServerId) ?? null
+      : null) ??
+    servers.find((server) => server.projectId === project.id) ??
+    null
+  );
+}
+
 function normalizeProjectRepositoryKey(value: string) {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-");
+}
+
+function normalizeGitHubRepositorySlug(value: string) {
+  const normalized = value.trim().replace(/\.git$/i, "");
+  const sshMatch = normalized.match(/github\.com[:/]([^/]+\/[^/]+)$/i);
+  if (sshMatch) {
+    return sshMatch[1].toLowerCase();
+  }
+
+  const httpMatch = normalized.match(/github\.com\/([^/]+\/[^/]+)$/i);
+  return httpMatch ? httpMatch[1].toLowerCase() : "";
 }
 
 function getTerminalSurface(tab: TerminalTab) {

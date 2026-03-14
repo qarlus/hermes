@@ -64,8 +64,8 @@ export function SessionLauncher({
 
           <section className="session-launcher__section">
             <div className="session-launcher__header">
-              <p className="eyebrow">Workspaces</p>
-              <span>Open a saved server from any workspace.</span>
+              <p className="eyebrow">Projects</p>
+              <span>Open a saved server from any project.</span>
             </div>
 
             <div className="session-launcher__groups">

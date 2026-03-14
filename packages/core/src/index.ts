@@ -1,10 +1,16 @@
 export type ServerAuthKind = "default" | "sshKey" | "password";
 export type KeychainItemKind = Exclude<ServerAuthKind, "default">;
+export type ProjectTargetKind = "local" | "server";
 
 export interface ProjectRecord {
   id: string;
   name: string;
   description: string;
+  path: string;
+  targetKind: ProjectTargetKind;
+  linkedServerId: string | null;
+  githubRepoFullName: string;
+  githubDefaultBranch: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -12,6 +18,18 @@ export interface ProjectRecord {
 export interface ProjectInput {
   name: string;
   description: string;
+  path: string;
+  targetKind: ProjectTargetKind;
+  linkedServerId: string;
+  githubRepoFullName: string;
+  githubDefaultBranch: string;
+  serverHostname: string;
+  serverPort: number;
+  serverUsername: string;
+  serverAuthKind: ServerAuthKind;
+  serverCredentialId: string;
+  serverCredentialName: string;
+  serverCredentialSecret: string;
 }
 
 export interface KeychainItemRecord {
@@ -30,6 +48,7 @@ export interface ServerRecord {
   hostname: string;
   port: number;
   username: string;
+  path: string;
   authKind: ServerAuthKind;
   credentialId: string | null;
   credentialName: string | null;
@@ -47,6 +66,7 @@ export interface ServerInput {
   hostname: string;
   port: number;
   username: string;
+  path: string;
   authKind: ServerAuthKind;
   credentialId: string | null;
   credentialName: string;
@@ -88,6 +108,7 @@ export interface TerminalTab {
 export interface ConnectSessionInput {
   serverId: string;
   tmuxSession?: string;
+  cwd?: string;
 }
 
 export interface ConnectLocalSessionInput {
@@ -105,6 +126,16 @@ export interface FileBrowserTarget {
   kind: FileBrowserTargetKind;
   serverId?: string;
   path?: string | null;
+}
+
+export interface ProjectRemoteConnectionInput {
+  hostname: string;
+  port: number;
+  username: string;
+  authKind: ServerAuthKind;
+  credentialId: string | null;
+  credentialName: string;
+  credentialSecret: string;
 }
 
 export interface FileBrowserEntryRecord {
@@ -312,7 +343,19 @@ export interface GitHubRepositoryRecord {
 
 export const defaultProjectInput = (): ProjectInput => ({
   name: "",
-  description: ""
+  description: "",
+  path: "",
+  targetKind: "local",
+  linkedServerId: "",
+  githubRepoFullName: "",
+  githubDefaultBranch: "main",
+  serverHostname: "",
+  serverPort: 22,
+  serverUsername: "",
+  serverAuthKind: "default",
+  serverCredentialId: "",
+  serverCredentialName: "",
+  serverCredentialSecret: ""
 });
 
 export const defaultServerInput = (projectId = ""): ServerInput => ({
@@ -321,6 +364,7 @@ export const defaultServerInput = (projectId = ""): ServerInput => ({
   hostname: "",
   port: 22,
   username: "",
+  path: "",
   authKind: "default",
   credentialId: null,
   credentialName: "",

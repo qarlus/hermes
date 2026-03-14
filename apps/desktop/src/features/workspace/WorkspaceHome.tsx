@@ -43,15 +43,66 @@ export function WorkspaceHome({
   onCreateServer,
   onOpenRelaySetup
 }: WorkspaceHomeProps) {
+  const linkedServer =
+    (project.linkedServerId
+      ? servers.find((server) => server.id === project.linkedServerId) ?? null
+      : null) ??
+    selectedServer ??
+    servers[0] ??
+    null;
+
   return (
     <div className="workspace-home">
       <div className="workspace-home__board">
         <section className="workspace-home__section">
           <div className="workspace-home__header">
             <div>
-              <p className="eyebrow">Servers</p>
-              <h2>Workspace servers</h2>
-              <span>{project.description || "Accounts and SSH targets inside this workspace."}</span>
+              <p className="eyebrow">Configuration</p>
+              <h2>{project.name}</h2>
+              <span>{project.description || "GitHub repo, project path, and runtime target."}</span>
+            </div>
+            <div className="workspace-home__header-actions">
+              <span className="workspace-home__meta">
+                {project.targetKind === "server" ? "Server-backed" : "Local"}
+              </span>
+            </div>
+          </div>
+
+          <div className="workspace-home__sessions">
+            <div className="workspace-home__session-group">
+              <div className="workspace-home__session-header">
+                <p className="eyebrow">Project setup</p>
+              </div>
+              <div className="workspace-home__empty-state">
+                <div className="workspace-home__empty-body">
+                  <strong>{project.githubRepoFullName || "No GitHub repo linked"}</strong>
+                  <span>Branch: {project.githubDefaultBranch || "main"}</span>
+                  <span>
+                    Path: {project.path || (project.targetKind === "server" ? "Uses linked server path" : "Unset")}
+                  </span>
+                  <span>
+                    Runtime: {project.targetKind === "server"
+                      ? linkedServer
+                        ? `${serverDisplayLabel(linkedServer)} / ${buildSshTarget(linkedServer)}`
+                        : "Server project without a linked server yet"
+                      : "Localhost"}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="workspace-home__section">
+          <div className="workspace-home__header">
+            <div>
+              <p className="eyebrow">Runtime</p>
+              <h2>Server connections</h2>
+              <span>
+                {project.targetKind === "server"
+                  ? "Attach the project to the server you want branch sessions to open on."
+                  : "Optional server targets for a project that usually runs on localhost."}
+              </span>
             </div>
             <div className="workspace-home__header-actions">
               <span className="workspace-home__meta">
@@ -103,7 +154,7 @@ export function WorkspaceHome({
                   </span>
                   <div className="workspace-home__empty-body">
                     <strong>Session surface is clear</strong>
-                    <span>Open a server above to start a terminal. Live connections will land here.</span>
+                    <span>Open a server above to start a terminal. Live sessions will land here.</span>
                   </div>
                 </div>
               ) : (
@@ -144,25 +195,25 @@ export function WorkspaceHome({
               <div className="workspace-home__session-header">
                 <p className="eyebrow">Remote Tmux</p>
               </div>
-            {selectedServer ? (
-              <TmuxSessionList
-                embedded
-                loading={tmuxLoading}
-                onConnect={(sessionName) => onConnect(selectedServer.id, sessionName)}
-                onRefresh={onRefreshTmux}
-                sessions={tmuxSessions}
-              />
-            ) : (
-              <div className="workspace-home__empty-state">
-                <span className="workspace-home__empty-icon">
-                  <TerminalSquare size={16} />
-                </span>
-                <div className="workspace-home__empty-body">
-                  <strong>Remote tmux is standing by</strong>
-                  <span>Select a server above to inspect and rejoin its active tmux sessions.</span>
+              {selectedServer ? (
+                <TmuxSessionList
+                  embedded
+                  loading={tmuxLoading}
+                  onConnect={(sessionName) => onConnect(selectedServer.id, sessionName)}
+                  onRefresh={onRefreshTmux}
+                  sessions={tmuxSessions}
+                />
+              ) : (
+                <div className="workspace-home__empty-state">
+                  <span className="workspace-home__empty-icon">
+                    <TerminalSquare size={16} />
+                  </span>
+                  <div className="workspace-home__empty-body">
+                    <strong>Remote tmux is standing by</strong>
+                    <span>Select a server above to inspect and rejoin its active tmux sessions.</span>
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
             </div>
           </div>
         </section>

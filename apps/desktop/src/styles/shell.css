@@ -8,8 +8,10 @@
 }
 
 .desktop-shell {
+  --desktop-shell-rail-current-width: var(--shell-rail-width);
+  --desktop-shell-secondary-current-width: var(--shell-secondary-rail-width);
   display: grid;
-  grid-template-columns: var(--shell-rail-width) minmax(0, 1fr);
+  grid-template-columns: var(--desktop-shell-rail-current-width) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   width: 100%;
   height: 100%;
@@ -17,15 +19,32 @@
   background: var(--bg);
 }
 
+.desktop-shell--rail-collapsed {
+  --desktop-shell-rail-current-width: 0px;
+}
+
+.desktop-shell--secondary-collapsed {
+  --desktop-shell-secondary-current-width: 0px;
+}
+
 .desktop-shell--with-secondary {
-  grid-template-columns: var(--shell-rail-width) var(--shell-secondary-rail-width) minmax(0, 1fr);
+  grid-template-columns:
+    var(--desktop-shell-rail-current-width)
+    var(--desktop-shell-secondary-current-width)
+    minmax(0, 1fr);
 }
 
 .desktop-shell__rail {
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
   border-right: 0;
   background: transparent;
+}
+
+.desktop-shell--rail-collapsed .desktop-shell__rail,
+.desktop-shell--secondary-collapsed .desktop-shell__secondary {
+  border-right: 0;
 }
 
 .desktop-shell__secondary {
@@ -37,7 +56,7 @@
 }
 
 .desktop-shell--with-secondary .desktop-shell__secondary {
-  width: var(--shell-secondary-rail-width);
+  width: var(--desktop-shell-secondary-current-width);
   border-right: 1px solid var(--shell-divider);
 }
 
@@ -56,6 +75,10 @@
   flex-direction: column;
   align-items: center;
   padding: 8px 0 6px;
+}
+
+.app-rail--collapsed {
+  display: none;
 }
 
 .app-rail__brand {
@@ -247,6 +270,47 @@
   gap: 6px;
 }
 
+.shell-restore-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.shell-restore-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.018);
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 560;
+  letter-spacing: -0.01em;
+  transition:
+    background 140ms ease,
+    color 140ms ease,
+    border-color 140ms ease,
+    transform 140ms ease;
+}
+
+.shell-restore-button:hover {
+  background: rgba(255, 255, 255, 0.032);
+  color: var(--text);
+}
+
+.shell-restore-button:active {
+  transform: translateY(1px);
+}
+
+.shell-restore-button--active {
+  border-color: rgba(91, 140, 255, 0.16);
+  background: rgba(91, 140, 255, 0.08);
+  color: #e1e9ff;
+}
+
 .shell-action-group {
   flex-wrap: wrap;
 }
@@ -341,6 +405,11 @@
   color: var(--text);
 }
 
+.shell-icon-button--active {
+  background: rgba(91, 140, 255, 0.1);
+  color: #e1e9ff;
+}
+
 .shell-icon-button:active:not(:disabled) {
   transform: translateY(1px);
 }
@@ -429,6 +498,7 @@
 
 .workspace-home,
 .keychain-page,
+.credentials-page,
 .git-page,
 .files-page,
 .settings-page {

@@ -12,6 +12,7 @@ import {
 import type { ViewState } from "../lib/app";
 
 type AppRailProps = {
+  collapsed: boolean;
   view: ViewState;
   onNavigate: (view: ViewState) => void;
 };
@@ -28,43 +29,48 @@ type RailItemConfig = {
 const RAIL_ITEMS: RailItemConfig[] = [
   { icon: House, label: "Home", title: "Home", view: "dashboard" },
   { icon: TerminalWindow, label: "Sessions", title: "Sessions", view: "sessions" },
-  { icon: DesktopTower, label: "Connections", title: "Connections", view: "workspace" },
-  { icon: Key, label: "Keychain", title: "Keychain", view: "keychain" },
+  { icon: DesktopTower, label: "Projects", title: "Projects", view: "workspace" },
+  { icon: Key, label: "Credentials", title: "Credentials", view: "keychain" },
   { icon: GitBranch, label: "Git", title: "Git", view: "git" },
   { icon: FolderSimple, label: "Files", title: "Files", view: "files" },
   { icon: GearSix, label: "Settings", title: "Settings", view: "settings" },
   { icon: ListBullets, label: "Logs", title: "Logs" }
 ];
 
-export function AppRail({ view, onNavigate }: AppRailProps) {
+export function AppRail({ collapsed, onNavigate, view }: AppRailProps) {
   return (
-    <aside className="app-rail" aria-label="Global navigation">
-      <button
-        aria-label="Open Home"
-        className="app-rail__brand"
-        onClick={() => onNavigate("dashboard")}
-        title="Hermes"
-        type="button"
-      >
-        <span className="app-rail__brand-mark">H</span>
-      </button>
+    <aside className={`app-rail ${collapsed ? "app-rail--collapsed" : ""}`} aria-label="Global navigation">
+      {collapsed ? null : (
+        <>
+          <button
+            aria-label="Open Home"
+            className="app-rail__brand"
+            onClick={() => onNavigate("dashboard")}
+            title="Hermes"
+            type="button"
+          >
+            <span className="app-rail__brand-mark">H</span>
+          </button>
 
-      <nav className="app-rail__nav">
-        {RAIL_ITEMS.map((item) => {
-          const targetView = item.view;
+          <nav className="app-rail__nav">
+            {RAIL_ITEMS.map((item) => {
+              const targetView = item.view;
 
-          return (
-            <AppRailItem
-              icon={item.icon}
-              isActive={targetView === view}
-              key={item.label}
-              label={item.label}
-              onClick={targetView ? () => onNavigate(targetView) : undefined}
-              title={item.title}
-            />
-          );
-        })}
-      </nav>
+              return (
+                <AppRailItem
+                  icon={item.icon}
+                  isActive={targetView === view}
+                  key={item.label}
+                  label={item.label}
+                  onClick={targetView ? () => onNavigate(targetView) : undefined}
+                  title={item.title}
+                />
+              );
+            })}
+          </nav>
+
+        </>
+      )}
     </aside>
   );
 }

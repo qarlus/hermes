@@ -89,6 +89,23 @@ struct GitHubDeviceFlowState {
 struct ProjectInput {
     name: String,
     description: String,
+    path: String,
+    target_kind: String,
+    linked_server_id: String,
+    github_repo_full_name: String,
+    github_default_branch: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectRemoteConnectionInput {
+    hostname: String,
+    port: u16,
+    username: String,
+    auth_kind: String,
+    credential_id: Option<String>,
+    credential_name: String,
+    credential_secret: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -97,6 +114,11 @@ struct ProjectRecord {
     id: String,
     name: String,
     description: String,
+    path: String,
+    target_kind: String,
+    linked_server_id: Option<String>,
+    github_repo_full_name: String,
+    github_default_branch: String,
     created_at: String,
     updated_at: String,
 }
@@ -146,6 +168,7 @@ struct ServerInput {
     hostname: String,
     port: u16,
     username: String,
+    path: String,
     auth_kind: String,
     credential_id: Option<String>,
     credential_name: String,
@@ -165,6 +188,7 @@ struct ServerRecord {
     hostname: String,
     port: u16,
     username: String,
+    path: String,
     auth_kind: String,
     credential_id: Option<String>,
     credential_name: Option<String>,
@@ -274,6 +298,7 @@ struct StoredRelayDeviceIdentityRecord {
 struct ConnectSessionInput {
     server_id: String,
     tmux_session: Option<String>,
+    cwd: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -649,6 +674,11 @@ impl Database {
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
                     description TEXT NOT NULL DEFAULT '',
+                    path TEXT NOT NULL DEFAULT '',
+                    target_kind TEXT NOT NULL DEFAULT 'local',
+                    linked_server_id TEXT DEFAULT NULL,
+                    github_repo_full_name TEXT NOT NULL DEFAULT '',
+                    github_default_branch TEXT NOT NULL DEFAULT 'main',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -669,6 +699,7 @@ impl Database {
                     hostname TEXT NOT NULL,
                     port INTEGER NOT NULL,
                     username TEXT NOT NULL DEFAULT '',
+                    path TEXT NOT NULL DEFAULT '',
                     identity_file TEXT NOT NULL DEFAULT '',
                     auth_kind TEXT NOT NULL DEFAULT 'default',
                     credential_id TEXT DEFAULT NULL,
@@ -702,6 +733,36 @@ impl Database {
 
         ensure_column(
             &connection,
+            "projects",
+            "path",
+            "ALTER TABLE projects ADD COLUMN path TEXT NOT NULL DEFAULT ''",
+        )?;
+        ensure_column(
+            &connection,
+            "projects",
+            "target_kind",
+            "ALTER TABLE projects ADD COLUMN target_kind TEXT NOT NULL DEFAULT 'local'",
+        )?;
+        ensure_column(
+            &connection,
+            "projects",
+            "linked_server_id",
+            "ALTER TABLE projects ADD COLUMN linked_server_id TEXT DEFAULT NULL",
+        )?;
+        ensure_column(
+            &connection,
+            "projects",
+            "github_repo_full_name",
+            "ALTER TABLE projects ADD COLUMN github_repo_full_name TEXT NOT NULL DEFAULT ''",
+        )?;
+        ensure_column(
+            &connection,
+            "projects",
+            "github_default_branch",
+            "ALTER TABLE projects ADD COLUMN github_default_branch TEXT NOT NULL DEFAULT 'main'",
+        )?;
+        ensure_column(
+            &connection,
             "credentials",
             "secret_blob",
             "ALTER TABLE credentials ADD COLUMN secret_blob TEXT NOT NULL DEFAULT ''",
@@ -711,6 +772,12 @@ impl Database {
             "hosts",
             "project_id",
             "ALTER TABLE hosts ADD COLUMN project_id TEXT NOT NULL DEFAULT ''",
+        )?;
+        ensure_column(
+            &connection,
+            "hosts",
+            "path",
+            "ALTER TABLE hosts ADD COLUMN path TEXT NOT NULL DEFAULT ''",
         )?;
         ensure_column(
             &connection,
@@ -873,7 +940,7 @@ impl Database {
         let mut statement = connection
             .prepare(
                 r#"
-                SELECT id, name, description, created_at, updated_at
+                SELECT id, name, description, path, target_kind, linked_server_id, github_repo_full_name, github_default_branch, created_at, updated_at
                 FROM projects
                 ORDER BY updated_at DESC, name COLLATE NOCASE ASC
                 "#,
@@ -897,7 +964,7 @@ impl Database {
         connection
             .query_row(
                 r#"
-                SELECT id, name, description, created_at, updated_at
+                SELECT id, name, description, path, target_kind, linked_server_id, github_repo_full_name, github_default_branch, created_at, updated_at
                 FROM projects
                 WHERE id = ?1
                 "#,
@@ -918,10 +985,32 @@ impl Database {
         connection
             .execute(
                 r#"
-                INSERT INTO projects (id, name, description, created_at, updated_at)
-                VALUES (?1, ?2, ?3, ?4, ?5)
+                INSERT INTO projects (
+                    id,
+                    name,
+                    description,
+                    path,
+                    target_kind,
+                    linked_server_id,
+                    github_repo_full_name,
+                    github_default_branch,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                 "#,
-                params![id, input.name.trim(), input.description.trim(), now, now],
+                params![
+                    id,
+                    input.name.trim(),
+                    input.description.trim(),
+                    input.path.trim(),
+                    normalized_project_target_kind(&input.target_kind)?,
+                    optional_non_empty(input.linked_server_id.trim()),
+                    input.github_repo_full_name.trim(),
+                    normalized_project_branch(&input.github_default_branch),
+                    now,
+                    now
+                ],
             )
             .map_err(|error| error.to_string())?;
         drop(connection);
@@ -937,10 +1026,28 @@ impl Database {
             .execute(
                 r#"
                 UPDATE projects
-                SET name = ?2, description = ?3, updated_at = ?4
+                SET
+                    name = ?2,
+                    description = ?3,
+                    path = ?4,
+                    target_kind = ?5,
+                    linked_server_id = ?6,
+                    github_repo_full_name = ?7,
+                    github_default_branch = ?8,
+                    updated_at = ?9
                 WHERE id = ?1
                 "#,
-                params![id, input.name.trim(), input.description.trim(), now],
+                params![
+                    id,
+                    input.name.trim(),
+                    input.description.trim(),
+                    input.path.trim(),
+                    normalized_project_target_kind(&input.target_kind)?,
+                    optional_non_empty(input.linked_server_id.trim()),
+                    input.github_repo_full_name.trim(),
+                    normalized_project_branch(&input.github_default_branch),
+                    now
+                ],
             )
             .map_err(|error| error.to_string())?;
         drop(connection);
@@ -1355,6 +1462,7 @@ impl Database {
                     hostname,
                     port,
                     username,
+                    path,
                     auth_kind,
                     credential_id,
                     device_credential_mode,
@@ -1364,7 +1472,7 @@ impl Database {
                     notes,
                     created_at,
                     updated_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
                 "#,
                 params![
                     id,
@@ -1373,6 +1481,7 @@ impl Database {
                     input.hostname.trim(),
                     i64::from(input.port),
                     input.username.trim(),
+                    input.path.trim(),
                     auth_kind,
                     credential_id,
                     device_credential_mode,
@@ -1410,14 +1519,15 @@ impl Database {
                     hostname = ?4,
                     port = ?5,
                     username = ?6,
-                    auth_kind = ?7,
-                    credential_id = ?8,
-                    device_credential_mode = ?9,
-                    is_favorite = ?10,
-                    tmux_session = ?11,
-                    use_tmux = ?12,
-                    notes = ?13,
-                    updated_at = ?14
+                    path = ?7,
+                    auth_kind = ?8,
+                    credential_id = ?9,
+                    device_credential_mode = ?10,
+                    is_favorite = ?11,
+                    tmux_session = ?12,
+                    use_tmux = ?13,
+                    notes = ?14,
+                    updated_at = ?15
                 WHERE id = ?1
                 "#,
                 params![
@@ -1427,6 +1537,7 @@ impl Database {
                     input.hostname.trim(),
                     i64::from(input.port),
                     input.username.trim(),
+                    input.path.trim(),
                     auth_kind,
                     credential_id,
                     device_credential_mode,
@@ -1451,6 +1562,12 @@ impl Database {
     fn delete_server(&self, id: &str) -> Result<(), String> {
         let server = self.get_server(id)?;
         let connection = self.connection.lock().map_err(lock_error)?;
+        connection
+            .execute(
+                "UPDATE projects SET linked_server_id = NULL WHERE linked_server_id = ?1",
+                [id],
+            )
+            .map_err(|error| error.to_string())?;
         connection
             .execute("DELETE FROM hosts WHERE id = ?1", [id])
             .map_err(|error| error.to_string())?;
@@ -2598,6 +2715,12 @@ fn connect_session(
         .as_deref()
         .map(sanitized_tmux_session)
         .unwrap_or_else(|| sanitized_tmux_session(&server.tmux_session));
+    let cwd = input
+        .cwd
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
 
     let mut command = CommandBuilder::new("ssh");
     command.arg("-tt");
@@ -2608,8 +2731,15 @@ fn connect_session(
     apply_connect_auth(&mut command, &server, auth_secret.as_deref())?;
     command.arg(ssh_target(&server));
 
-    if server.use_tmux {
-        command.arg(format!("tmux new -A -s {}", resolved_tmux_session));
+    if let Some(remote_command) = build_remote_session_command(
+        cwd.as_deref(),
+        if server.use_tmux {
+            Some(resolved_tmux_session.as_str())
+        } else {
+            None
+        },
+    ) {
+        command.arg(remote_command);
     }
 
     let log_message = format!("starting session for {} ({})", title, ssh_target(&server));
@@ -2620,7 +2750,7 @@ fn connect_session(
         command,
         title,
         server.id.clone(),
-        None,
+        cwd,
         auto_password,
         "connect_session",
         &log_message,
@@ -2648,6 +2778,20 @@ fn connect_local_session(
         "starting local terminal session",
         Some("Opening local terminal...".to_string()),
     )
+}
+
+#[tauri::command]
+async fn read_project_remote_directory(
+    state: State<'_, AppState>,
+    connection: ProjectRemoteConnectionInput,
+    path: Option<String>,
+) -> Result<FileBrowserDirectoryRecord, String> {
+    let database = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        load_project_remote_directory(&database, &connection, path.as_deref())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -3552,6 +3696,112 @@ find . -mindepth 1 -maxdepth 1 -printf '%P\0%y\0%s\0%T@\0' 2>/dev/null
         target: FileBrowserTargetInput {
             kind: "server".to_string(),
             server_id: Some(server.id.clone()),
+            path: Some(current_path.clone()),
+        },
+        title: current_path.clone(),
+        parent_path: remote_parent_path(&current_path),
+        entries,
+        can_write: true,
+    })
+}
+
+fn load_project_remote_directory(
+    database: &Database,
+    connection: &ProjectRemoteConnectionInput,
+    path: Option<&str>,
+) -> Result<FileBrowserDirectoryRecord, String> {
+    let auth_kind = normalized_auth_kind(&connection.auth_kind)?;
+    if auth_kind == AUTH_PASSWORD {
+        return Err(
+            "Password-authenticated remote browsing is not supported yet. Choose an SSH key or system SSH."
+                .to_string(),
+        );
+    }
+
+    if connection.hostname.trim().is_empty() {
+        return Err("Server hostname is required before browsing remote folders.".to_string());
+    }
+
+    let server = project_remote_server(connection, auth_kind);
+    let auth_secret = resolve_project_remote_secret(database, connection, auth_kind)?;
+    let requested_path = path.unwrap_or_default().trim().to_string();
+    let script = r#"target="$1"
+if [ -n "$target" ]; then
+  cd -- "$target" || exit 11
+else
+  cd -- "$HOME" || exit 11
+fi
+pwd
+printf '\0'
+find . -mindepth 1 -maxdepth 1 -printf '%P\0%y\0%s\0%T@\0' 2>/dev/null
+"#;
+    let output = ssh_command_output_script_with_auth(
+        &server,
+        auth_secret.as_deref(),
+        script,
+        &[requested_path.as_str()],
+    )?;
+    if !output.status.success() {
+        return Err(command_error_message(
+            &output,
+            "Failed to load the remote directory.",
+        ));
+    }
+
+    let mut tokens = output.stdout.split(|byte| *byte == 0_u8);
+    let current_path = String::from_utf8_lossy(tokens.next().unwrap_or_default())
+        .trim()
+        .to_string();
+
+    let mut entries = Vec::new();
+    loop {
+        let Some(name_bytes) = tokens.next() else {
+            break;
+        };
+        if name_bytes.is_empty() {
+            break;
+        }
+        let file_type = tokens.next().unwrap_or_default();
+        let size_bytes = tokens.next().unwrap_or_default();
+        let modified_bytes = tokens.next().unwrap_or_default();
+
+        let name = String::from_utf8_lossy(name_bytes).to_string();
+        if name.is_empty() {
+            continue;
+        }
+
+        let kind = match file_type.first().copied() {
+            Some(b'd') => "directory",
+            Some(b'f') => "file",
+            Some(b'l') => "symlink",
+            _ => "other",
+        };
+        let full_path = join_remote_path(&current_path, &name);
+        let size = if kind == "file" {
+            String::from_utf8_lossy(size_bytes)
+                .trim()
+                .parse::<u64>()
+                .ok()
+        } else {
+            None
+        };
+        let modified_at = parse_remote_epoch_timestamp(&String::from_utf8_lossy(modified_bytes));
+        entries.push(FileBrowserEntryRecord {
+            name: name.clone(),
+            path: full_path,
+            kind: kind.to_string(),
+            size,
+            modified_at,
+            hidden: is_hidden_name(&name),
+        });
+    }
+
+    sort_file_entries(&mut entries);
+
+    Ok(FileBrowserDirectoryRecord {
+        target: FileBrowserTargetInput {
+            kind: "server".to_string(),
+            server_id: None,
             path: Some(current_path.clone()),
         },
         title: current_path.clone(),
@@ -4590,11 +4840,20 @@ fn ssh_command_output_script(
     args: &[&str],
 ) -> Result<std::process::Output, String> {
     let auth_secret = database.resolve_server_secret(server)?;
+    ssh_command_output_script_with_auth(server, auth_secret.as_deref(), script, args)
+}
+
+fn ssh_command_output_script_with_auth(
+    server: &ServerRecord,
+    auth_secret: Option<&str>,
+    script: &str,
+    args: &[&str],
+) -> Result<std::process::Output, String> {
     let mut command =
         Command::new(resolve_program_path("ssh").unwrap_or_else(|| PathBuf::from("ssh")));
     command.arg("-o").arg("BatchMode=yes");
     command.arg("-o").arg("ConnectTimeout=5");
-    apply_shell_auth(&mut command, server, auth_secret.as_deref())?;
+    apply_shell_auth(&mut command, server, auth_secret)?;
     command.arg(ssh_target(server));
     command.arg(build_remote_script_command(args));
     command.stdin(Stdio::piped());
@@ -4647,6 +4906,67 @@ fn scp_command(database: &Database, server: &ServerRecord) -> Result<Command, St
     Ok(command)
 }
 
+fn project_remote_server(
+    connection: &ProjectRemoteConnectionInput,
+    auth_kind: &str,
+) -> ServerRecord {
+    ServerRecord {
+        id: "project-remote".to_string(),
+        project_id: String::new(),
+        name: connection.hostname.trim().to_string(),
+        hostname: connection.hostname.trim().to_string(),
+        port: connection.port,
+        username: connection.username.trim().to_string(),
+        path: String::new(),
+        auth_kind: auth_kind.to_string(),
+        credential_id: connection
+            .credential_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        credential_name: connection
+            .credential_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|_| connection.credential_name.trim().to_string()),
+        device_credential_mode: DEVICE_CREDENTIAL_MODE_AUTO.to_string(),
+        is_favorite: false,
+        tmux_session: "main".to_string(),
+        use_tmux: false,
+        notes: String::new(),
+        created_at: String::new(),
+        updated_at: String::new(),
+    }
+}
+
+fn resolve_project_remote_secret(
+    database: &Database,
+    connection: &ProjectRemoteConnectionInput,
+    auth_kind: &str,
+) -> Result<Option<String>, String> {
+    if auth_kind == AUTH_DEFAULT {
+        return Ok(None);
+    }
+
+    let credential_id = connection
+        .credential_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(credential_id) = credential_id {
+        return database.read_secret(credential_id).map(Some);
+    }
+
+    let secret = connection.credential_secret.trim();
+    if secret.is_empty() {
+        return Err("Choose a saved SSH key or provide a private key path first.".to_string());
+    }
+
+    Ok(Some(secret.to_string()))
+}
+
 fn build_scp_remote_spec(server: &ServerRecord, path: &str) -> String {
     format!("{}:{}", ssh_target(server), escape_scp_remote_path(path))
 }
@@ -4673,6 +4993,22 @@ fn build_remote_script_command(args: &[&str]) -> String {
         command.push_str(&shell_single_quote(arg));
     }
     command
+}
+
+fn build_remote_session_command(cwd: Option<&str>, tmux_session: Option<&str>) -> Option<String> {
+    match (cwd, tmux_session) {
+        (Some(path), Some(session)) => Some(format!(
+            "tmux new -A -s {} -c {}",
+            shell_single_quote(session),
+            shell_single_quote(path)
+        )),
+        (Some(path), None) => Some(format!(
+            "cd {} && exec \"${{SHELL:-/bin/sh}}\" -i",
+            shell_single_quote(path)
+        )),
+        (None, Some(session)) => Some(format!("tmux new -A -s {}", shell_single_quote(session))),
+        (None, None) => None,
+    }
 }
 
 fn shell_single_quote(value: &str) -> String {
@@ -4864,6 +5200,7 @@ pub fn run() {
             inspect_relay_host,
             connect_session,
             connect_local_session,
+            read_project_remote_directory,
             read_file_directory,
             read_file_preview,
             open_file_on_device,
@@ -6948,10 +7285,37 @@ fn terminate_process(process_id: Option<u32>) -> Result<(), String> {
 
 fn validate_project_input(input: &ProjectInput) -> Result<(), String> {
     if input.name.trim().is_empty() {
-        return Err("Workspace name is required.".to_string());
+        return Err("Project name is required.".to_string());
     }
 
+    normalized_project_target_kind(&input.target_kind)?;
     Ok(())
+}
+
+fn normalized_project_target_kind(value: &str) -> Result<&'static str, String> {
+    match value.trim() {
+        "local" => Ok("local"),
+        "server" => Ok("server"),
+        _ => Err("Project target must be local or server.".to_string()),
+    }
+}
+
+fn normalized_project_branch(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        "main".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn optional_non_empty(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 fn validate_server_input(database: &Database, input: &ServerInput) -> Result<(), String> {
@@ -7076,6 +7440,7 @@ fn server_select_sql(where_clause: &str) -> &'static str {
                 hosts.hostname,
                 hosts.port,
                 hosts.username,
+                hosts.path,
                 hosts.auth_kind,
                 hosts.credential_id,
                 credentials.name,
@@ -7099,6 +7464,7 @@ fn server_select_sql(where_clause: &str) -> &'static str {
                 hosts.hostname,
                 hosts.port,
                 hosts.username,
+                hosts.path,
                 hosts.auth_kind,
                 hosts.credential_id,
                 credentials.name,
@@ -7508,8 +7874,13 @@ fn map_project_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectRecord> {
         id: row.get(0)?,
         name: row.get(1)?,
         description: row.get(2)?,
-        created_at: row.get(3)?,
-        updated_at: row.get(4)?,
+        path: row.get(3)?,
+        target_kind: row.get(4)?,
+        linked_server_id: row.get(5)?,
+        github_repo_full_name: row.get(6)?,
+        github_default_branch: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
     })
 }
 
@@ -7532,16 +7903,17 @@ fn map_server_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ServerRecord> {
         hostname: row.get(3)?,
         port: row.get(4)?,
         username: row.get(5)?,
-        auth_kind: row.get(6)?,
-        credential_id: row.get(7)?,
-        credential_name: row.get(8)?,
-        device_credential_mode: row.get(9)?,
-        is_favorite: row.get::<_, i64>(10)? != 0,
-        tmux_session: row.get(11)?,
-        use_tmux: row.get::<_, i64>(12)? != 0,
-        notes: row.get(13)?,
-        created_at: row.get(14)?,
-        updated_at: row.get(15)?,
+        path: row.get(6)?,
+        auth_kind: row.get(7)?,
+        credential_id: row.get(8)?,
+        credential_name: row.get(9)?,
+        device_credential_mode: row.get(10)?,
+        is_favorite: row.get::<_, i64>(11)? != 0,
+        tmux_session: row.get(12)?,
+        use_tmux: row.get::<_, i64>(13)? != 0,
+        notes: row.get(14)?,
+        created_at: row.get(15)?,
+        updated_at: row.get(16)?,
     })
 }
 

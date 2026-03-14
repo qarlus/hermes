@@ -52,17 +52,17 @@ function HostDashboard({
   return (
     <div className="home">
       <div className="home__content">
-        {/* Recent workspaces */}
+        {/* Recent projects */}
         <section className="home__section">
           <header className="home__section-header">
             <h3 className="home__section-title">
-              Recent workspaces
+              Recent projects
               <span className="home__section-count">{projects.length}</span>
             </h3>
             <button
               className="home__section-action"
               onClick={onCreateProject}
-              title="New workspace"
+              title="New project"
               type="button"
             >
               <Plus size={14} />
@@ -72,18 +72,23 @@ function HostDashboard({
           {projects.length === 0 ? (
             <div className="home__empty">
               <div className="home__empty-text">
-                <p>No workspaces yet</p>
-                <span>Create a workspace to organize servers and connections.</span>
+                <p>No projects yet</p>
+                <span>Create a project to link a repo, path, and runtime target.</span>
               </div>
               <button className="home__empty-action" onClick={onCreateProject} type="button">
                 <Plus size={12} />
-                Create workspace
+                Create project
               </button>
             </div>
           ) : (
             <div className="home__list">
               {projects.map((project) => {
                 const serverCount = serverCountByProject[project.id] ?? 0;
+                const runtimeLabel =
+                  project.targetKind === "server"
+                    ? `${serverCount} server${serverCount === 1 ? "" : "s"}`
+                    : "Localhost";
+
                 return (
                   <button
                     className="home__row home__row--launcher"
@@ -98,8 +103,9 @@ function HostDashboard({
                       <span className="home__row-name">{projectDisplayLabel(project)}</span>
                       <DetailCluster
                         items={[
-                          "Local workspace",
-                          `${serverCount} server${serverCount === 1 ? "" : "s"}`
+                          project.githubRepoFullName || "No GitHub repo linked",
+                          project.path || "No path set",
+                          runtimeLabel
                         ]}
                       />
                     </span>
@@ -134,7 +140,7 @@ function HostDashboard({
                     type="button"
                   >
                     <FolderSimple size={16} weight="regular" />
-                    Reopen workspace
+                    Reopen project
                   </button>
                 ) : null}
                 <button className="home__quick-action" onClick={onOpenLocalShell} type="button">
@@ -184,11 +190,11 @@ function HostDashboard({
           )}
         </section>
 
-        {/* Saved connections */}
+        {/* Saved servers */}
         <section className="home__section">
           <header className="home__section-header">
             <h3 className="home__section-title">
-              Saved connections
+              Saved servers
               <span className="home__section-count">{favoriteServers.length}</span>
             </h3>
           </header>
@@ -197,12 +203,12 @@ function HostDashboard({
             <div className="home__list">
               <div className="home__empty">
                 <div className="home__empty-text">
-                  <p>No saved connections</p>
-                  <span>Add a host once and keep it within reach from Home.</span>
+                  <p>No saved servers</p>
+                  <span>Add a server and link it to a project when you need a remote runtime.</span>
                 </div>
                 <button className="home__empty-action" onClick={onCreateServer} type="button">
                   <Plus size={12} />
-                  Add connection
+                  Add server
                 </button>
               </div>
             </div>

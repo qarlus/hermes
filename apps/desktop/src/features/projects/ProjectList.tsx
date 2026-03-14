@@ -38,8 +38,10 @@ export function ProjectList({
           <span className="project-card__body">
             <strong>{projectDisplayLabel(project)}</strong>
             <span>
-              {serverCountByProject[project.id] ?? 0} server
-              {(serverCountByProject[project.id] ?? 0) === 1 ? "" : "s"}
+              {project.targetKind === "server"
+                ? `${serverCountByProject[project.id] ?? 0} server${(serverCountByProject[project.id] ?? 0) === 1 ? "" : "s"}`
+                : "Local project"}
+              {project.githubRepoFullName.trim() ? ` / ${project.githubRepoFullName.trim()}` : ""}
             </span>
           </span>
         </button>

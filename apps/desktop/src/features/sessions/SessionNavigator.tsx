@@ -27,6 +27,7 @@ type LocalSessionPreset = {
 };
 
 type SessionNavigatorProps = {
+  collapsed: boolean;
   tabs: TerminalTab[];
   activeTabId: string | null;
   selectedProjectId: string | null;
@@ -52,6 +53,7 @@ type SessionNavigatorProps = {
 };
 
 export function SessionNavigator({
+  collapsed,
   tabs,
   activeTabId,
   selectedProjectId,
@@ -109,33 +111,13 @@ export function SessionNavigator({
     activeProjectBranchName === "main" ? "Main session" : `${activeProjectBranchName} session`;
   const branchSessionMeta = `${tabs.length} terminal${tabs.length === 1 ? "" : "s"}`;
 
+  if (collapsed) {
+    return <div aria-hidden="true" className="session-navigator session-navigator--collapsed" />;
+  }
+
   return (
     <div className="session-navigator">
       <div className="session-navigator__header">
-        <div className="session-navigator__mode-switch" role="tablist" aria-label="Navigator mode">
-          <button
-            aria-selected={mode === "projects"}
-            className={`session-navigator__mode-button ${
-              mode === "projects" ? "session-navigator__mode-button--active" : ""
-            }`}
-            onClick={() => setMode("projects")}
-            role="tab"
-            type="button"
-          >
-            Projects
-          </button>
-          <button
-            aria-selected={mode === "sessions"}
-            className={`session-navigator__mode-button ${
-              mode === "sessions" ? "session-navigator__mode-button--active" : ""
-            }`}
-            onClick={() => setMode("sessions")}
-            role="tab"
-            type="button"
-          >
-            Sessions
-          </button>
-        </div>
         {mode === "projects" && selectedProject ? (
           <div className="session-navigator__session-actions">
             <button className="session-navigator__mini-action" onClick={onCreateGitBranch} type="button">
@@ -172,6 +154,30 @@ export function SessionNavigator({
             </button>
           </div>
         ) : null}
+        <div className="session-navigator__mode-switch" role="tablist" aria-label="Navigator mode">
+          <button
+            aria-selected={mode === "projects"}
+            className={`session-navigator__mode-button ${
+              mode === "projects" ? "session-navigator__mode-button--active" : ""
+            }`}
+            onClick={() => setMode("projects")}
+            role="tab"
+            type="button"
+          >
+            Projects
+          </button>
+          <button
+            aria-selected={mode === "sessions"}
+            className={`session-navigator__mode-button ${
+              mode === "sessions" ? "session-navigator__mode-button--active" : ""
+            }`}
+            onClick={() => setMode("sessions")}
+            role="tab"
+            type="button"
+          >
+            Sessions
+          </button>
+        </div>
       </div>
 
       <div className="session-navigator__scroll">
@@ -191,11 +197,11 @@ export function SessionNavigator({
                       </span>
                       <span className="session-navigator-row__copy">
                         <strong>{selectedProject.name}</strong>
-                        <span>{selectedProjectRepository?.path ?? "Workspace context"}</span>
+                        <span>{selectedProjectRepository?.path ?? "Project context"}</span>
                       </span>
                     </button>
                     <button
-                      aria-label={`Open ${selectedProject.name} connections`}
+                      aria-label={`Open ${selectedProject.name} project settings`}
                       className="session-navigator-row__settings"
                       onClick={() => onOpenProjectSettings(selectedProject.id)}
                       type="button"
@@ -234,7 +240,7 @@ export function SessionNavigator({
               </>
             ) : (
               <>
-                <NavigatorBlock label="Workspaces">
+                <NavigatorBlock label="Projects">
                   {projectEntries.length === 0 ? (
                     <div className="session-navigator__placeholder" />
                   ) : (
@@ -261,7 +267,7 @@ export function SessionNavigator({
                           </span>
                         </button>
                         <button
-                          aria-label={`Open ${project.title} connections`}
+                          aria-label={`Open ${project.title} project settings`}
                           className="session-navigator-row__settings"
                           onClick={() => onOpenProjectSettings(project.id)}
                           type="button"
@@ -341,7 +347,22 @@ export function SessionNavigator({
 
 function findProjectRepository(project: ProjectRecord, repositories: GitRepositoryView[]) {
   const projectName = normalizeKey(project.name);
+  const projectPath = project.path.trim();
+  const projectRepo = project.githubRepoFullName.trim().toLowerCase();
   return (
+    repositories.find((repository) => repository.path === projectPath) ??
+    repositories.find((repository) => {
+      const snapshot = repository.snapshot;
+      if (!snapshot || !projectRepo) {
+        return false;
+      }
+
+      return snapshot.remotes.some((remote) =>
+        [remote.fetchUrl, remote.pushUrl].some(
+          (value) => normalizeGitHubRepositorySlug(value) === projectRepo
+        )
+      );
+    }) ??
     repositories.find((repository) => normalizeKey(repository.name) === projectName) ??
     repositories.find((repository) => normalizeKey(repository.path).includes(projectName)) ??
     null
@@ -350,6 +371,17 @@ function findProjectRepository(project: ProjectRecord, repositories: GitReposito
 
 function normalizeKey(value: string) {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-");
+}
+
+function normalizeGitHubRepositorySlug(value: string) {
+  const normalized = value.trim().replace(/\.git$/i, "");
+  const sshMatch = normalized.match(/github\.com[:/]([^/]+\/[^/]+)$/i);
+  if (sshMatch) {
+    return sshMatch[1].toLowerCase();
+  }
+
+  const httpMatch = normalized.match(/github\.com\/([^/]+\/[^/]+)$/i);
+  return httpMatch ? httpMatch[1].toLowerCase() : "";
 }
 
 function NavigatorBlock({

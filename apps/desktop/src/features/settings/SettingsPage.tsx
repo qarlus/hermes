@@ -114,7 +114,7 @@ export function SettingsPage({
     {
       id: "secrets",
       title: "Synced secrets",
-      description: "SSH keys and credentials already stored in the local Hermes keychain.",
+      description: "SSH keys and credentials already stored in the local Hermes credentials vault.",
       meta: syncedKeyCount === 0 ? "No items yet" : `${syncedKeyCount} item${syncedKeyCount === 1 ? "" : "s"}`,
       checked: settings.syncIncludesSecrets,
       onChange: onSyncIncludesSecretsChange

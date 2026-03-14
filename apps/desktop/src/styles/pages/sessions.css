@@ -1,22 +1,36 @@
 .desktop-shell--with-secondary .desktop-shell__secondary {
-  background: var(--bg-panel);
+  background: var(--bg);
+}
+
+.desktop-shell__main:has(.sessions-workspace),
+.desktop-shell__main:has(.sessions-workspace) .shell-topbar {
+  background: var(--bg);
 }
 
 .desktop-shell--with-secondary:has(.session-navigator) {
-  grid-template-columns: var(--shell-rail-width) 156px minmax(0, 1fr);
+  --desktop-shell-secondary-current-width: 156px;
+  grid-template-columns:
+    var(--desktop-shell-rail-current-width)
+    var(--desktop-shell-secondary-current-width)
+    minmax(0, 1fr);
+}
+
+.desktop-shell--with-secondary.desktop-shell--secondary-collapsed:has(.session-navigator) {
+  --desktop-shell-secondary-current-width: 0px;
 }
 
 .desktop-shell--with-secondary:has(.session-navigator) .desktop-shell__secondary {
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   align-self: stretch;
-  width: 156px;
+  width: var(--desktop-shell-secondary-current-width);
   height: 100%;
 }
 
 .page-frame--full .page-frame__inner:has(.sessions-workspace) {
   max-width: none;
   padding: 0;
+  background: var(--bg);
 }
 
 .page-frame__inner > .stage--sessions {
@@ -29,15 +43,21 @@
 .stage--sessions > .sessions-workspace {
   min-height: 0;
   height: 100%;
+  background: var(--bg);
 }
 
 .session-navigator {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   height: 100%;
   min-height: 0;
   overflow: hidden;
   border-right: 1px solid rgba(255, 255, 255, 0.035);
+  background: var(--bg);
+}
+
+.session-navigator--collapsed {
+  display: none;
 }
 
 .session-navigator__header {
@@ -50,7 +70,6 @@
 
 .session-navigator__header strong,
 .session-navigator__mode-button,
-.session-context-strip__copy strong,
 .session-pane-shell__title,
 .preview-panel__header strong {
   font-size: 11px;
@@ -88,7 +107,6 @@
 }
 
 .session-navigator__actions,
-.session-context-strip__actions,
 .bottom-dock__tabs {
   display: flex;
   align-items: center;
@@ -315,7 +333,6 @@
 }
 
 .session-navigator-row__copy span,
-.session-context-strip__copy span,
 .session-pane-shell__description,
 .preview-panel__header span,
 .bottom-dock__meta {
@@ -328,29 +345,13 @@
 
 .sessions-workspace {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   width: 100%;
   height: 100%;
   min-height: 0;
   gap: 0;
   overflow: hidden;
   background: var(--bg);
-}
-
-.session-context-strip {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 36px;
-  padding: 0 14px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.035);
-}
-
-.session-context-strip__copy {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
 }
 
 .sessions-workspace__body {
@@ -365,6 +366,14 @@
 
 .sessions-workspace__body--with-preview {
   grid-template-columns: minmax(0, 1fr) minmax(320px, 0.34fr);
+}
+
+.sessions-workspace__body--with-git {
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.24fr);
+}
+
+.sessions-workspace__body--with-git-preview {
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.22fr) minmax(320px, 0.32fr);
 }
 
 .sessions-workspace__body > * {
@@ -451,7 +460,7 @@
   min-height: 0;
   position: relative;
   height: 100%;
-  background: var(--bg-panel);
+  background: var(--bg);
 }
 
 .session-pane-shell__body--ghost {
@@ -544,6 +553,7 @@
 .pane-terminal-host__terminals .terminal-pane__surface {
   position: absolute;
   inset: 0;
+  padding: 0 10px 10px 12px;
 }
 
 .session-starter-bar {
@@ -567,6 +577,13 @@
   justify-items: start;
   gap: 16px;
   padding: 28px 28px 24px;
+}
+
+.session-project-picker--project-library {
+  place-items: center;
+  align-content: center;
+  justify-items: center;
+  padding: 32px;
 }
 
 .session-project-picker__card {
@@ -621,6 +638,202 @@
 
 .session-project-picker__item:hover {
   background: rgba(255, 255, 255, 0.035);
+}
+
+.project-library__item--active {
+  border-color: rgba(255, 255, 255, 0.11);
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.project-library__empty {
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.project-library__empty strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.project-library__empty span {
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.path-picker-field {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 56px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  text-align: left;
+}
+
+.path-picker-field:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.path-picker-field:disabled {
+  opacity: 0.6;
+}
+
+.path-picker-field__icon,
+.project-remote-browser__row-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-soft);
+}
+
+.path-picker-field__copy,
+.project-remote-browser__row-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.path-picker-field__copy strong,
+.project-remote-browser__row-copy strong {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.path-picker-field__copy span,
+.project-remote-browser__row-copy span {
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.path-picker-field__action,
+.project-remote-browser__path {
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.inline-field-action {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.project-remote-browser {
+  width: min(760px, calc(100vw - 48px));
+}
+
+.project-remote-browser__body {
+  display: grid;
+  gap: 12px;
+}
+
+.project-remote-browser__selection,
+.project-remote-browser__error,
+.project-remote-browser__empty {
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.project-remote-browser__selection {
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.02)),
+    rgba(255, 255, 255, 0.02);
+}
+
+.project-remote-browser__selection-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.project-remote-browser__selection-copy strong {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.project-remote-browser__selection-copy span {
+  color: var(--text-faint);
+  word-break: break-all;
+}
+
+.project-remote-browser__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.project-remote-browser__path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-remote-browser__up-icon {
+  transform: rotate(-90deg);
+}
+
+.project-remote-browser__error {
+  color: #f0b0b0;
+}
+
+.project-remote-browser__list {
+  display: grid;
+  gap: 8px;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.project-remote-browser__row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  text-align: left;
+}
+
+.project-remote-browser__row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.project-remote-browser__row-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+}
+
+.project-remote-browser__actions {
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 .session-project-picker__footer {
@@ -737,8 +950,52 @@
   border-left: 1px solid rgba(255, 255, 255, 0.04);
 }
 
+.preview-panel--git {
+  border-left: 1px solid rgba(255, 255, 255, 0.035);
+}
+
 .preview-panel__surface {
-  background: var(--bg-panel);
+  height: 100%;
+  background: var(--bg);
+}
+
+.preview-panel__surface--git {
+  display: grid;
+  place-items: center;
+  padding: 18px;
+}
+
+.preview-panel__empty {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  width: 100%;
+  max-width: 240px;
+  color: var(--text-soft);
+}
+
+.preview-panel__empty strong {
+  font-size: 13px;
+  font-weight: 620;
+  letter-spacing: -0.02em;
+}
+
+.preview-panel__empty span {
+  color: var(--text-faint);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.preview-panel__empty-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--text-soft);
 }
 
 .bottom-dock {
@@ -783,15 +1040,10 @@
 
 .dock-placeholder {
   height: 100%;
-  background: var(--bg-panel);
+  background: var(--bg);
 }
 
 @media (max-width: 1120px) {
-  .session-context-strip {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
   .sessions-workspace__body--with-preview,
   .sessions-canvas__pane-grid--columns {
     grid-template-columns: 1fr;
@@ -815,7 +1067,24 @@
 
 @media (max-width: 880px) {
   .desktop-shell--with-secondary {
-    grid-template-columns: var(--shell-rail-width) minmax(208px, 0.34fr) minmax(0, 1fr);
+    grid-template-columns:
+      var(--desktop-shell-rail-current-width)
+      minmax(208px, 0.34fr)
+      minmax(0, 1fr);
+  }
+
+  .desktop-shell--with-secondary:has(.session-navigator) {
+    grid-template-columns:
+      var(--desktop-shell-rail-current-width)
+      minmax(148px, 0.28fr)
+      minmax(0, 1fr);
+  }
+
+  .desktop-shell--with-secondary.desktop-shell--secondary-collapsed:has(.session-navigator) {
+    grid-template-columns:
+      var(--desktop-shell-rail-current-width)
+      var(--desktop-shell-secondary-current-width)
+      minmax(0, 1fr);
   }
 
   .sessions-canvas__pane-grid--rows {

@@ -1,8 +1,10 @@
 import type {
+  GitHubRepositoryRecord,
   KeychainItemKind,
   KeychainItemRecord,
   ProjectInput,
   ProjectRecord,
+  ServerRecord,
   ServerInput
 } from "@hermes/core";
 import { KeychainItemEditor } from "../features/keychain/KeychainItemEditor";
@@ -16,6 +18,8 @@ type AppDialogsProps = {
   projectDraft: ProjectInput;
   serverDraft: ServerInput;
   projects: ProjectRecord[];
+  servers: ServerRecord[];
+  gitHubRepositories: GitHubRepositoryRecord[];
   keychainItems: KeychainItemRecord[];
   saving: boolean;
   editingKeychainItem: KeychainItemRecord | null;
@@ -27,7 +31,7 @@ type AppDialogsProps = {
   localSshKeyDirectoryDraft: string;
   localSshKeyFileNameDraft: string;
   localSshKeyPassphraseDraft: string;
-  onProjectChange: (field: keyof ProjectInput, value: string) => void;
+  onProjectChange: <K extends keyof ProjectInput>(field: K, value: ProjectInput[K]) => void;
   onServerChange: <K extends keyof ServerInput>(field: K, value: ServerInput[K]) => void;
   onCloseInspector: () => void;
   onDeleteProject: () => void;
@@ -55,6 +59,8 @@ export function AppDialogs({
   projectDraft,
   serverDraft,
   projects,
+  servers,
+  gitHubRepositories,
   keychainItems,
   saving,
   editingKeychainItem,
@@ -93,6 +99,8 @@ export function AppDialogs({
       {inspector.kind === "project" ? (
         <ProjectEditor
           draft={projectDraft}
+          gitHubRepositories={gitHubRepositories}
+          keychainItems={keychainItems}
           mode={inspector.mode}
           onChange={onProjectChange}
           onClose={onCloseInspector}

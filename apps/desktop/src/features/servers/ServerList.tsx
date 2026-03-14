@@ -23,7 +23,7 @@ export function ServerList({
   if (servers.length === 0) {
     return (
       <div className="server-list server-list--empty">
-        <p>No servers in this workspace.</p>
+        <p>No servers in this project.</p>
         <span>Add a server and connect through the system SSH binary.</span>
         {onCreate ? (
           <button className="primary-button" onClick={onCreate} type="button">

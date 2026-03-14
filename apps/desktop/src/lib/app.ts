@@ -21,7 +21,23 @@ export type ViewState =
 export function normalizeProjectInput(input: ProjectInput): ProjectInput {
   return {
     name: input.name.trim(),
-    description: input.description.trim()
+    description: input.description.trim(),
+    path: input.path.trim(),
+    targetKind: input.targetKind === "server" ? "server" : "local",
+    linkedServerId: input.linkedServerId.trim(),
+    githubRepoFullName: input.githubRepoFullName.trim(),
+    githubDefaultBranch: input.githubDefaultBranch.trim() || "main",
+    serverHostname: input.serverHostname.trim(),
+    serverPort: Number.isFinite(input.serverPort) ? input.serverPort : 22,
+    serverUsername: input.serverUsername.trim(),
+    serverAuthKind: input.serverAuthKind === "password"
+      ? "password"
+      : input.serverAuthKind === "sshKey"
+        ? "sshKey"
+        : "default",
+    serverCredentialId: input.serverCredentialId.trim(),
+    serverCredentialName: input.serverCredentialName.trim(),
+    serverCredentialSecret: input.serverCredentialSecret.trim()
   };
 }
 
@@ -32,6 +48,7 @@ export function normalizeServerInput(input: ServerInput): ServerInput {
     name: input.name.trim(),
     hostname: input.hostname.trim(),
     username: input.username.trim(),
+    path: input.path.trim(),
     credentialName: input.credentialName.trim(),
     credentialSecret:
       input.authKind === "password" ? input.credentialSecret : input.credentialSecret.trim(),
@@ -49,6 +66,7 @@ export function mapServerToInput(server: ServerRecord): ServerInput {
     hostname: server.hostname,
     port: server.port,
     username: server.username,
+    path: server.path,
     authKind: server.authKind,
     credentialId: server.credentialId,
     credentialName: server.credentialName ?? "",

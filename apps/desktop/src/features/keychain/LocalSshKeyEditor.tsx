@@ -37,7 +37,7 @@ export function LocalSshKeyEditor({
       <section className="modal-card modal-card--workspace" onClick={(event) => event.stopPropagation()}>
         <div className="modal-card__header">
           <div>
-            <p className="eyebrow">Keychain</p>
+            <p className="eyebrow">Credentials</p>
             <h2>Create SSH key</h2>
           </div>
           <button
@@ -54,7 +54,7 @@ export function LocalSshKeyEditor({
           <div className="form-section">
             <div className="form-section__header">
               <p className="eyebrow">Local key</p>
-              <span>Generate a new ed25519 key on this device and save its path into Keychain.</span>
+              <span>Generate a new ed25519 key on this device and save its path into Credentials.</span>
             </div>
 
             <label className="field">

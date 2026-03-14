@@ -39,7 +39,7 @@ export function KeychainItemEditor({
       <section className="modal-card modal-card--workspace" onClick={(event) => event.stopPropagation()}>
         <div className="modal-card__header">
           <div>
-            <p className="eyebrow">Keychain</p>
+            <p className="eyebrow">Credentials</p>
             <h2>{mode === "create" ? "Add credential" : "Edit credential"}</h2>
           </div>
           <button
